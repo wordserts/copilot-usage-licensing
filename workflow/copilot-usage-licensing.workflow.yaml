@@ -7,7 +7,7 @@ metadata:
   inputs: []
 workflow:
   title: Copilot Corporate Stats
-  description: Collects M365 Copilot usage, prompts, org hierarchy and licence data from Microsoft Graph and ingests metrics. After import, edit the SETTINGS block in the "config" task AND the config block at the top of "copilot_licence_pull". The schedule is imported switched off - enable it after a successful manual run.
+  description: Collects M365 Copilot usage, prompts, org hierarchy and licence data from Microsoft Graph and ingests metrics. After import, edit the SETTINGS block in the "config" task - every other task reads from it. The schedule is imported switched off - enable it after a successful manual run.
   schemaVersion: 4
   trigger:
     schedule:
@@ -524,17 +524,31 @@ workflow:
           // Metrics are ingested with an API token (scope: metrics.ingest) held in the credential vault,
           // so the workflow's own identity doesn't need openpipeline:metrics:ingest.
 
+          import { execution } from '@dynatrace-sdk/automation-utils';
           import { credentialVaultClient } from '@dynatrace-sdk/client-classic-environment-v2';
           import { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';
 
           // ---------- config ----------
-          const TENANT_ID = '<entra-tenant-id>';
-          const CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX';        // user/password type: username = clientId, password = secret
-          const DT_TOKEN_CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX'; // token type: Dynatrace API token with metrics.ingest
-          const DT_ENV_URL = '';           // optional override, e.g. 'https://abc12345.live.dynatrace.com'; blank = derive from this environment
+          // Tenant ID, credential IDs and the ingest URL come from the "config" task (SETTINGS.graph and
+          // SETTINGS.ingest), so there is nothing tenant-specific to edit here.
           const SKU_PATTERN = /COPILOT/i;  // matches Microsoft_365_Copilot etc. (see note on E7 below)
           const DRY_RUN = false;           // true = return what would be ingested, ingest nothing
           // -----------------------------
+
+          let TENANT_ID, CREDENTIAL_ID, DT_TOKEN_CREDENTIAL_ID, DT_ENV_URL;
+
+          async function loadConfig(ctx) {
+            const exe = await execution(ctx.execution_id);
+            const cfg = await exe.result('config');
+            if (!cfg || !cfg.graph) throw new Error('No settings from the "config" task');
+            TENANT_ID = cfg.graph.tenantId;
+            CREDENTIAL_ID = cfg.graph.credentialId;
+            DT_TOKEN_CREDENTIAL_ID = cfg.ingest && cfg.ingest.credentialId;
+            DT_ENV_URL = (cfg.ingest && cfg.ingest.environmentUrl) || '';
+            if (!DT_TOKEN_CREDENTIAL_ID) {
+              throw new Error('The licence pull ingests with an API token: set ingest.credentialId in the "config" task to a vault Token credential (scope metrics.ingest).');
+            }
+          }
 
           function ingestBaseUrl() {
             if (DT_ENV_URL) return DT_ENV_URL.replace(/\/$/, '');
@@ -596,7 +610,8 @@ workflow:
           // Metric line protocol: quote + escape dimension values
           const dim = (v) => `"${String(v ?? 'unknown').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-          export default async function () {
+          export default async function (ctx) {
+            await loadConfig(ctx);
             const token = await getToken();
             const lines = [];
 
@@ -688,6 +703,6 @@ workflow:
       conditions:
         states:
           aggregate: OK
-      description: EDIT ME - own config block (tenant ID, credential IDs). Purchased/assigned seats and per-user licence list
+      description: Purchased/assigned seats and per-user licence list. Settings come from the config task
       predecessors:
       - aggregate

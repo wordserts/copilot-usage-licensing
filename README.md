@@ -8,7 +8,11 @@ A Dynatrace Workflow pulls Copilot usage and licence data from Microsoft Graph o
 | [`workflow/copilot-usage-licensing.workflow.yaml`](workflow/copilot-usage-licensing.workflow.yaml) | Same workflow as YAML, for `dtctl` / CI deployment |
 | [`dashboard/copilot-usage-licensing.dashboard.json`](dashboard/copilot-usage-licensing.dashboard.json) | The dashboard (55 tiles) |
 
-Both files use placeholders only. Nothing in them is tenant-specific until you edit it (Step 7).
+![Dashboard summary: adoption, licences vs activity, estimated value](images/dashboard-summary.png)
+
+*Screenshots use demo data. All people, departments and figures are fictional.*
+
+Both files use placeholders only. Nothing in them is tenant-specific until you edit the `config` task (Step 7).
 
 **Time needed:** about 45 minutes if you have an Entra admin and a Dynatrace admin on hand. Steps 1–2 need the Entra/M365 admin. Steps 3–6 need a Dynatrace admin.
 
@@ -18,6 +22,8 @@ Both files use placeholders only. Nothing in them is tenant-specific until you e
 config → collect → count_prompts (×N batches) → plan_retry → retry_prompts → aggregate → copilot_licence_pull
 ```
 
+![The workflow in the Workflows app: schedule, config, collect, count_prompts](images/workflow.png)
+
 | Task | What it does |
 |---|---|
 | `config` | **You edit this.** Holds all settings and checks the credentials are readable. |
@@ -25,7 +31,7 @@ config → collect → count_prompts (×N batches) → plan_retry → retry_prom
 | `count_prompts` | Counts each user's prompts over the last 28 days (batched, 3 in parallel). |
 | `plan_retry` / `retry_prompts` | Re-runs users that timed out or were rate-limited, in smaller batches. |
 | `aggregate` | Resolves departments from the org chart and ingests the per-user, per-app and collection-health metrics. |
-| `copilot_licence_pull` | **You edit this too.** Ingests purchased/assigned seats and the per-user licence list. |
+| `copilot_licence_pull` | Ingests purchased/assigned seats and the per-user licence list. Reads its settings from `config`. |
 | `studio_exec_costs` | **Optional, disabled.** Copilot Studio credit consumption. See [Optional](#optional-copilot-studio-credits). |
 
 ## Before you start
@@ -77,7 +83,7 @@ This is tenant-wide and exposes real names in all M365 reports, so the customer'
 
 Copy the token (`dt0c01.…`). It is only shown once.
 
-Why a token? The SDK's `metricsClient.ingest()` runs as the workflow actor and needs the platform permission `openpipeline:metrics:ingest`, which many tenants don't grant (it fails with a 403). Ingesting with an API token avoids that. If the customer prefers to grant the permission instead, leave `ingest.credentialId` empty in Step 7.
+Why a token? The SDK's `metricsClient.ingest()` runs as the workflow actor and needs the platform permission `openpipeline:metrics:ingest`, which many tenants don't grant (it fails with a 403). Ingesting with an API token avoids that. The licence task always ingests with this token, so `ingest.credentialId` must be set in Step 7.
 
 ## Step 4 · Store the credentials in the Dynatrace vault
 
@@ -132,7 +138,7 @@ Permission names differ between tenant generations, so confirm them in your IAM 
 |---|---|
 | `graph.tenantId` | Directory (tenant) ID from Step 1 |
 | `graph.credentialId` | Vault ID of `M365 Graph - Copilot Stats` |
-| `ingest.credentialId` | Vault ID of `DT Ingest - Copilot Stats`. Leave `""` only if you granted the actor `openpipeline:metrics:ingest` |
+| `ingest.credentialId` | Vault ID of `DT Ingest - Copilot Stats` (required) |
 | `ingest.environmentUrl` | Leave `""` unless the ingest host is non-standard |
 | `departmentSource` | `"managerChain"` (default): a user's department is the first department head found walking up their manager chain. `"attribute"`: use an Entra extension attribute instead |
 | `departments` | For `managerChain`: department name plus the UPN(s) of its head. **Replace the `@company.com` examples** |
@@ -141,8 +147,8 @@ Permission names differ between tenant generations, so confirm them in your IAM 
 
    The remaining settings (`promptWindowDays`, `batchSize`, `timeBudgetMs`, …) are tuned and rarely need changing.
 
-4. Open the **`copilot_licence_pull`** task. It has its **own** config block at the top. Set `TENANT_ID`, `CREDENTIAL_ID` and `DT_TOKEN_CREDENTIAL_ID` to the same values as above.
-   - If Copilot is licensed through a bundle (for example M365 E7), widen `SKU_PATTERN` so it matches that SKU's `skuPartNumber`.
+4. That's the only task you must edit. Every other task, including `copilot_licence_pull`, reads these values from `config`.
+   - If Copilot is licensed through a bundle (for example M365 E7), open `copilot_licence_pull` and widen `SKU_PATTERN` so it matches that SKU's `skuPartNumber`.
 
 Don't paste secrets into the workflow. It only holds vault IDs.
 
@@ -181,7 +187,19 @@ The dashboard shows nothing until the first full run in Step 8 has completed.
 
 ### What's on it
 
-Adoption overview (assigned = active + unused), estimated value, licence cost and reclaim, adoption journey (cohorts, top 10 users, unused-licence list), app usage, department scorecard, collection health, and a definitions section that recalculates live.
+**Adoption journey and app usage.** Seats grouped by 28-day prompt count, the top 10 users, the unused-licence list (your reclaim worklist), and prompts, assisted hours and active users per app.
+
+![Adoption journey and app usage](images/dashboard-adoption.png)
+
+**Licence cost and definitions.** Monthly spend, unused spend, annual reclaim, cost per active user and per prompt, and estimated ROI. The worked-calculations table recalculates live with the `SeatPrice` and `MinutesPerPrompt` filters, so every figure can be checked on screen.
+
+![Licence cost, definitions and worked calculations](images/dashboard-licence-cost.png)
+
+**Departments and collection health.** A scorecard per department (licensed, active, adoption, cost, unused spend, ROI) with drill-downs driven by the `Department` filter. Collection health shows expected vs reported users, missing users, errors and concealed UPNs, so you can trust the numbers.
+
+![Department scorecard and collection health](images/dashboard-departments.png)
+
+The top of the dashboard also covers adoption overview (assigned = active + unused) and estimated value, as in the first screenshot.
 
 ### Known limits
 
