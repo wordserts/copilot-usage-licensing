@@ -1,0 +1,693 @@
+metadata:
+  version: '1'
+  dependencies:
+    apps:
+    - id: dynatrace.automations
+      version: ^1.3590.2
+  inputs: []
+workflow:
+  title: Copilot Corporate Stats
+  description: Collects M365 Copilot usage, prompts, org hierarchy and licence data from Microsoft Graph and ingests metrics. After import, edit the SETTINGS block in the "config" task AND the config block at the top of "copilot_licence_pull". The schedule is imported switched off - enable it after a successful manual run.
+  schemaVersion: 4
+  trigger:
+    schedule:
+      isActive: false
+      trigger:
+        time: 05:00
+        type: time
+      filterParameters: {}
+      timezone: Australia/Sydney
+      inputs: {}
+  result: null
+  type: STANDARD
+  input: {}
+  hourlyExecutionLimit: 1000
+  guide: null
+  tasks:
+    config:
+      name: config
+      input:
+        script: |
+          import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';
+          import { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';
+          import { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';
+
+          // Task 1 — config
+          // ══════════════════════════════════════════════════════════════════════════
+          //  THIS IS THE ONLY TASK YOU NEED TO EDIT.
+          //
+          //  1. Store the Entra app's client ID + secret in the Dynatrace credential vault
+          //     (Settings → Credential vault → Add → "Username and password",
+          //      username = client ID, password = client secret, scope = App Engine).
+          //  2. Paste the vault ID and your Entra tenant ID below (graph.*).
+          //  3. Metric ingest — pick one:
+          //       a) leave ingest.credentialId empty and grant the workflow actor
+          //          openpipeline:metrics:ingest, or
+          //       b) store a Dynatrace API token (scope: metrics.ingest) in the vault as a
+          //          "Token" credential (scope App Engine) and paste its ID in ingest.credentialId.
+          //          environmentUrl can stay empty — it defaults to https://<env>.live.dynatrace.com
+          //  4. Set your departments (or switch to an attribute-based split).
+          //
+          //  Secrets are never stored here or returned from this task: every step reads
+          //  the vault itself using credentialId. This task's result holds IDs only.
+          // ══════════════════════════════════════════════════════════════════════════
+          const SETTINGS = {
+            "graph": {
+              "tenantId": "<entra-tenant-id>",
+              "credentialId": "CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX"
+            },
+            "ingest": {
+              "credentialId": "CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX",
+              "environmentUrl": ""
+            },
+            "departmentSource": "managerChain",
+            "departments": [
+              {
+                "name": "Finance",
+                "heads": [
+                  "cfo@company.com"
+                ]
+              },
+              {
+                "name": "Marketing",
+                "heads": [
+                  "cmo@company.com"
+                ]
+              },
+              {
+                "name": "Operations",
+                "heads": [
+                  "coo@company.com"
+                ]
+              },
+              {
+                "name": "People & Culture",
+                "heads": [
+                  "chro@company.com"
+                ]
+              },
+              {
+                "name": "Technology",
+                "heads": [
+                  "cio@company.com",
+                  "cto@company.com"
+                ]
+              }
+            ],
+            "orgAttributes": {
+              "business_unit": "extensionAttribute3",
+              "region": "extensionAttribute4",
+              "function": "extensionAttribute2"
+            },
+            "departmentAttribute": "business_unit",
+            "unassignedLabel": "Unassigned",
+            "orgHierarchy": true,
+            "emitOrgMembership": true,
+            "orgMembershipScope": "licensed",
+            "agentInventory": true,
+            "promptWindowDays": 28,
+            "reportPeriod": "D7",
+            "metricPrefix": "m365copilot",
+            "batchSize": 4,
+            "retryBatchSize": 2,
+            "pageSize": 500,
+            "maxPagesPerUser": 10,
+            "timeBudgetMs": 95000
+          };
+
+          export default async function () {
+            const problems = [];
+            if (!SETTINGS.graph.tenantId || SETTINGS.graph.tenantId.includes('<')) problems.push('graph.tenantId is not set');
+            if (!/^CREDENTIALS_VAULT-[A-F0-9]+$/i.test(SETTINGS.graph.credentialId || '')) problems.push('graph.credentialId must look like CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX');
+            if (SETTINGS.ingest && SETTINGS.ingest.credentialId && !/^CREDENTIALS_VAULT-[A-F0-9]+$/i.test(SETTINGS.ingest.credentialId)) {
+              problems.push('ingest.credentialId must be empty or look like CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX');
+            }
+            if (SETTINGS.batchSize > 20) problems.push('batchSize must be ≤ 20');
+            if (SETTINGS.departmentSource === 'attribute' && !SETTINGS.orgAttributes[SETTINGS.departmentAttribute]) {
+              problems.push(`departmentAttribute "${SETTINGS.departmentAttribute}" must be a key of orgAttributes`);
+            }
+            if (problems.length) throw new Error('Edit the "config" task: ' + problems.join('; '));
+
+            // Prove the credential is readable by this workflow's actor — without returning it.
+            let cred;
+            try {
+              cred = await credentialVaultClient.getCredentialsDetails({ id: SETTINGS.graph.credentialId });
+            } catch (e) {
+              throw new Error(`Cannot read ${SETTINGS.graph.credentialId}: ${e.message}. Check the credential's scope includes "App Engine" and the workflow actor may read credentials.`);
+            }
+            if (!cred || !cred.username || !cred.password) {
+              throw new Error(`${SETTINGS.graph.credentialId} must be a "Username and password" credential (username = client ID, password = client secret).`);
+            }
+
+            // Same check for the optional ingest token.
+            if (SETTINGS.ingest && SETTINGS.ingest.credentialId) {
+              let t;
+              try { t = await credentialVaultClient.getCredentialsDetails({ id: SETTINGS.ingest.credentialId }); }
+              catch (e) { throw new Error(`Cannot read ingest credential ${SETTINGS.ingest.credentialId}: ${e.message}. Check its scope includes "App Engine".`); }
+              const tok = t && (t.token || t.password);
+              if (!tok || !/^dt0c01\./.test(tok)) throw new Error(`${SETTINGS.ingest.credentialId} must be a Token credential holding a Dynatrace API token (dt0c01.…).`);
+            }
+
+            console.log(`Ingest: ${SETTINGS.ingest && SETTINGS.ingest.credentialId ? 'API token from vault' : 'workflow actor (needs openpipeline:metrics:ingest)'}`);
+            console.log(`Config OK — tenant ${SETTINGS.graph.tenantId}, ${SETTINGS.departments.length} departments (${SETTINGS.departmentSource})`);
+            return SETTINGS;
+          }
+      action: dynatrace.automations:run-javascript
+      active: true
+      position:
+        x: 0
+        y: 1
+      description: EDIT ME — tenant ID, credential vault ID, departments, value rates
+      predecessors: []
+    collect:
+      name: collect
+      input:
+        script: "import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';\nimport { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ─────────────────────────────────────────────────────────────────────────────\n//  Shared helpers — inlined into every task script by build.mjs.\n//  Settings come from the \"config\" task (edit them there, not here).\n// ─────────────────────────────────────────────────────────────────────────────\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);\n\nlet CONFIG = null;\nasync function loadConfig(ctx) {\n  const exe = await execution(ctx.execution_id);\n  CONFIG = await exe.result('config');\n  if (!CONFIG || !CONFIG.graph) throw new Error('No settings from the \"config\" task');\n  return exe;\n}\n\n// fetch with exponential backoff on network\
+          \ errors / 429 / 5xx, honouring Retry-After.\n// Returns the final Response (possibly non-OK); throws only if the network never answers.\nasync function fetchRetry(url, opts = {}, label = url, { retries = 4, deadline = Infinity } = {}) {\n  for (let attempt = 1; ; attempt++) {\n    let resp, err;\n    try { resp = await fetch(url, opts); } catch (e) { err = e; }\n    const retryable = err || resp.status === 429 || resp.status >= 500;\n    if (!retryable) return resp;\n    if (attempt > retries) {\n      if (err) throw new Error(`${label}: network error after ${retries} retries: ${err.message}`);\n      return resp;\n    }\n    const ra = resp ? parseInt(resp.headers.get('Retry-After') || '0', 10) : 0;\n    const wait = ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** (attempt - 1), 15000);\n    if (Date.now() + wait > deadline) { if (err) throw err; return resp; }\n    console.log(`${label}: ${err ? 'network error' : resp.status} — retry ${attempt} in ${wait}ms`);\n    await sleep(wait);\n\
+          \  }\n}\n\n// Client-credentials token for Microsoft Graph. Client ID/secret live in the\n// Dynatrace credential vault (type: username/password, scope: AppEngine) —\n// never in the script, never returned in task results.\nasync function graphToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.graph.credentialId });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: 'https://graph.microsoft.com/.default',\n    grant_type: 'client_credentials',\n  }).toString();\n  const r = await fetchRetry(\n    `https://login.microsoftonline.com/${CONFIG.graph.tenantId}/oauth2/v2.0/token`,\n    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },\n    'OAuth'\n  );\n  if (!r.ok) throw new Error(`OAuth failed (${r.status}): ${await r.text()}`);\n  return (await r.json()).access_token;\n}\n\n// ── Metric line protocol ──\nconst metric = (name) => `${CONFIG.metricPrefix}.${name}`;\n\
+          function dimValue(v) {\n  const s = String(v ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 240);\n  return '\"' + s.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n}\nfunction line(name, dims, value) {\n  const d = Object.entries(dims || {}).map(([k, v]) => `,${k}=${dimValue(v)}`).join('');\n  return `${metric(name)}${d} gauge,${value}`;\n}\n// Two ingest modes:\n//  • ingest.credentialId set → classic Metrics API v2 with a Dynatrace API token read from\n//    the credential vault (Token credential, scope \"metrics.ingest\", vault scope App Engine).\n//  • otherwise → platform SDK as the workflow actor (needs openpipeline:metrics:ingest).\nasync function ingest(lines) {\n  const viaToken = !!(CONFIG.ingest && CONFIG.ingest.credentialId);\n  const send = viaToken ? await tokenSender() : sdkSender;\n  for (let i = 0; i < lines.length; i += 900) {\n    const chunk = lines.slice(i, i + 900);\n    await send(chunk.join('\\n'));\n    console.log(`Ingested ${chunk.length}\
+          \ lines (${i + chunk.length}/${lines.length}) via ${viaToken ? 'API token' : 'SDK'}`);\n  }\n}\n\nasync function sdkSender(body) {\n  try {\n    await metricsClient.ingest({ body });\n  } catch (e) {\n    if (/403|permission/i.test(String(e && e.message))) {\n      throw new Error(`Metric ingest refused for the workflow actor (${e.message}). Either grant the actor ` +\n        `\"openpipeline:metrics:ingest\" (IAM policy: ALLOW openpipeline:metrics:ingest;) or set ingest.credentialId ` +\n        `in the config task to a vault Token credential holding an API token with the metrics.ingest scope.`);\n    }\n    throw e;\n  }\n}\n\nasync function tokenSender() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.ingest.credentialId });\n  const token = cred.token || cred.password;\n  if (!token) throw new Error(`${CONFIG.ingest.credentialId} holds no token`);\n  const base = (CONFIG.ingest.environmentUrl || getEnvironmentUrl().replace('.apps.', '.live.')).replace(/\\\
+          /+$/, '');\n  return async (body) => {\n    const r = await fetchRetry(`${base}/api/v2/metrics/ingest`, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },\n      body,\n    }, 'Metric ingest');\n    const text = await r.text();\n    if (r.status !== 202) throw new Error(`Metric ingest failed (${r.status}) at ${base}: ${text}`);\n    const res = text ? JSON.parse(text) : {};\n    if (res.linesInvalid) console.log(`WARNING: ${res.linesInvalid} invalid lines: ${JSON.stringify(res.error || {})}`);\n  };\n}\n\n// ── Copilot appClass → friendly app name (done here so DQL stays simple) ──\nconst APP_NAMES = {\n  outlook: 'Outlook', word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint', onenote: 'OneNote',\n  bizchat: 'Copilot Chat (Work)', webchat: 'Copilot Chat (Web)', teams: 'Teams',\n  privatechat: 'Teams Private Chat', forms: 'Forms', sharepoint: 'SharePoint', stream: 'Stream',\n  loop: 'Loop', m365app: 'M365\
+          \ App', planner: 'Planner', whiteboard: 'Whiteboard',\n  officecopilotsearchanswer: 'Copilot Search', officecopilotnotebook: 'Copilot Notebook',\n};\nfunction appName(appClass) {\n  const key = String(appClass || 'unknown').toLowerCase().split(/[._]/).pop();\n  return APP_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);\n}\n\n// ── RFC 4180 CSV parser (the Graph report quotes display names containing commas) ──\nfunction parseCsv(text) {\n  const rows = []; let row = []; let field = ''; let q = false;\n  text = text.replace(/^\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else q = false; }\n      else field += c;\n    } else if (c === '\"') q = true;\n    else if (c === ',') { row.push(field); field = ''; }\n    else if (c === '\\n' || c === '\\r') {\n      if (c === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(field); field = '';\n      if\
+          \ (row.some((f) => f !== '')) rows.push(row);\n      row = [];\n    } else field += c;\n  }\n  row.push(field);\n  if (row.some((f) => f !== '')) rows.push(row);\n  const [header = [], ...data] = rows;\n  const h = header.map((x) => x.trim());\n  return data.map((r) => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));\n}\n\n// ── Loop item: newer runtimes pass it directly, older ones via actionExecution ──\nasync function loopItem(ctx) {\n  if (ctx && ctx.loopItemValue !== undefined) return ctx.loopItemValue;\n  if (ctx && ctx.action_execution_id) {\n    const ae = await actionExecution(ctx.action_execution_id);\n    return ae.loopItem?.item;\n  }\n  throw new Error('No loop item available');\n}\n\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push({ idx: out.length, users: arr.slice(i, i + size) });\n  return out;\n}\n\n// Task 1 — collect\n// Pulls the M365 Copilot usage report (licensed users + last activity per\
+          \ app),\n// ingests the org-level adoption metrics and the agent inventory, and plans\n// the per-user batches for the prompt-counting loop.\nexport default async function (ctx) {\n  await loadConfig(ctx);\n  const token = await graphToken();\n  const H = { Authorization: `Bearer ${token}` };\n\n  // GA endpoint, CSV stream. Do not add $format or version='v2' (both 400 today).\n  const url = `https://graph.microsoft.com/v1.0/copilot/reports/getMicrosoft365CopilotUsageUserDetail(period='${CONFIG.reportPeriod}')`;\n  const r = await fetchRetry(url, { headers: H }, 'Usage report');\n  if (!r.ok) throw new Error(`Usage report failed (${r.status}): ${await r.text()}`);\n\n  const rows = parseCsv(await r.text()).filter((u) => u['User Principal Name']);\n  console.log(`Licensed users in report: ${rows.length}`);\n\n  const concealed = rows.filter((u) => !u['User Principal Name'].includes('@')).length;\n  if (concealed > 0) {\n    console.log(`WARNING: ${concealed}/${rows.length} UPNs\
+          \ are concealed. Turn off \"Display concealed user, group, and site names in all reports\" in M365 Admin Center → Settings → Org settings → Reports.`);\n  }\n\n  // Every \"<App> Copilot Last Activity Date\" column → app name. New columns are picked up automatically.\n  const appCols = Object.keys(rows[0] || {}).filter((h) => /Last Activity Date$/.test(h) && h !== 'Last Activity Date');\n  const appOf = (h) => h.replace(/ Last Activity Date$/, '').replace(/^Microsoft /, '').replace(/ Copilot$/, '');\n\n  const byApp = {};\n  let active = 0;\n  for (const u of rows) {\n    let any = false;\n    for (const col of appCols) if (u[col]) { any = true; byApp[appOf(col)] = (byApp[appOf(col)] || 0) + 1; }\n    if (any) active++;\n  }\n\n  const lines = [\n    line('active_users', {}, active),\n    line('enabled_users', {}, rows.length),\n    line('adoption_pct', {}, rows.length ? Math.round((active / rows.length) * 100) : 0),\n    line('report_concealed_upns', {}, concealed),\n    ...Object.entries(byApp).map(([app,\
+          \ n]) => line('active_users_by_app', { app }, n)),\n  ];\n\n  // ── Agent inventory (beta, optional — failure here never blocks the run) ──\n  if (CONFIG.agentInventory) {\n    try {\n      const ar = await fetchRetry('https://graph.microsoft.com/beta/copilot/admin/catalog/packages', { headers: H }, 'Agent catalog');\n      if (ar.ok) {\n        const agents = (await ar.json()).value || [];\n        const tally = (key) => agents.reduce((m, a) => ((m[a[key] || 'Unknown'] = (m[a[key] || 'Unknown'] || 0) + 1), m), {});\n        lines.push(line('agents_total', {}, agents.length));\n        lines.push(line('agents_without_owner', {}, agents.filter((a) => !a.owner).length));\n        for (const [creator, n] of Object.entries(tally('creatorType'))) lines.push(line('agents_by_creator', { creator }, n));\n        for (const [platform, n] of Object.entries(tally('platform'))) lines.push(line('agents_by_platform', { platform }, n));\n      } else {\n        console.log(`Agent catalog unavailable\
+          \ (${ar.status}) — skipped`);\n      }\n    } catch (e) {\n      console.log(`Agent catalog error — skipped: ${e.message}`);\n    }\n  }\n\n  await ingest(lines);\n\n  const users = rows.map((u) => ({ upn: u['User Principal Name'], name: u['Display Name'] || u['User Principal Name'] }));\n  const batches = chunk(users, CONFIG.batchSize);\n  console.log(`Planned ${batches.length} batches of ≤${CONFIG.batchSize}`);\n\n  // Only the work plan goes into the task result — no tokens, no secrets.\n  return { totalUsers: users.length, activeUsers: active, concealed, batches };\n}\n"
+      action: dynatrace.automations:run-javascript
+      active: true
+      position:
+        x: 0
+        y: 2
+      conditions:
+        states:
+          config: OK
+      description: Usage report → org metrics, agent inventory, batch plan
+      predecessors:
+      - config
+    aggregate:
+      name: aggregate
+      input:
+        script: "import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';\nimport { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ─────────────────────────────────────────────────────────────────────────────\n//  Shared helpers — inlined into every task script by build.mjs.\n//  Settings come from the \"config\" task (edit them there, not here).\n// ─────────────────────────────────────────────────────────────────────────────\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);\n\nlet CONFIG = null;\nasync function loadConfig(ctx) {\n  const exe = await execution(ctx.execution_id);\n  CONFIG = await exe.result('config');\n  if (!CONFIG || !CONFIG.graph) throw new Error('No settings from the \"config\" task');\n  return exe;\n}\n\n// fetch with exponential backoff on network\
+          \ errors / 429 / 5xx, honouring Retry-After.\n// Returns the final Response (possibly non-OK); throws only if the network never answers.\nasync function fetchRetry(url, opts = {}, label = url, { retries = 4, deadline = Infinity } = {}) {\n  for (let attempt = 1; ; attempt++) {\n    let resp, err;\n    try { resp = await fetch(url, opts); } catch (e) { err = e; }\n    const retryable = err || resp.status === 429 || resp.status >= 500;\n    if (!retryable) return resp;\n    if (attempt > retries) {\n      if (err) throw new Error(`${label}: network error after ${retries} retries: ${err.message}`);\n      return resp;\n    }\n    const ra = resp ? parseInt(resp.headers.get('Retry-After') || '0', 10) : 0;\n    const wait = ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** (attempt - 1), 15000);\n    if (Date.now() + wait > deadline) { if (err) throw err; return resp; }\n    console.log(`${label}: ${err ? 'network error' : resp.status} — retry ${attempt} in ${wait}ms`);\n    await sleep(wait);\n\
+          \  }\n}\n\n// Client-credentials token for Microsoft Graph. Client ID/secret live in the\n// Dynatrace credential vault (type: username/password, scope: AppEngine) —\n// never in the script, never returned in task results.\nasync function graphToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.graph.credentialId });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: 'https://graph.microsoft.com/.default',\n    grant_type: 'client_credentials',\n  }).toString();\n  const r = await fetchRetry(\n    `https://login.microsoftonline.com/${CONFIG.graph.tenantId}/oauth2/v2.0/token`,\n    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },\n    'OAuth'\n  );\n  if (!r.ok) throw new Error(`OAuth failed (${r.status}): ${await r.text()}`);\n  return (await r.json()).access_token;\n}\n\n// ── Metric line protocol ──\nconst metric = (name) => `${CONFIG.metricPrefix}.${name}`;\n\
+          function dimValue(v) {\n  const s = String(v ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 240);\n  return '\"' + s.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n}\nfunction line(name, dims, value) {\n  const d = Object.entries(dims || {}).map(([k, v]) => `,${k}=${dimValue(v)}`).join('');\n  return `${metric(name)}${d} gauge,${value}`;\n}\n// Two ingest modes:\n//  • ingest.credentialId set → classic Metrics API v2 with a Dynatrace API token read from\n//    the credential vault (Token credential, scope \"metrics.ingest\", vault scope App Engine).\n//  • otherwise → platform SDK as the workflow actor (needs openpipeline:metrics:ingest).\nasync function ingest(lines) {\n  const viaToken = !!(CONFIG.ingest && CONFIG.ingest.credentialId);\n  const send = viaToken ? await tokenSender() : sdkSender;\n  for (let i = 0; i < lines.length; i += 900) {\n    const chunk = lines.slice(i, i + 900);\n    await send(chunk.join('\\n'));\n    console.log(`Ingested ${chunk.length}\
+          \ lines (${i + chunk.length}/${lines.length}) via ${viaToken ? 'API token' : 'SDK'}`);\n  }\n}\n\nasync function sdkSender(body) {\n  try {\n    await metricsClient.ingest({ body });\n  } catch (e) {\n    if (/403|permission/i.test(String(e && e.message))) {\n      throw new Error(`Metric ingest refused for the workflow actor (${e.message}). Either grant the actor ` +\n        `\"openpipeline:metrics:ingest\" (IAM policy: ALLOW openpipeline:metrics:ingest;) or set ingest.credentialId ` +\n        `in the config task to a vault Token credential holding an API token with the metrics.ingest scope.`);\n    }\n    throw e;\n  }\n}\n\nasync function tokenSender() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.ingest.credentialId });\n  const token = cred.token || cred.password;\n  if (!token) throw new Error(`${CONFIG.ingest.credentialId} holds no token`);\n  const base = (CONFIG.ingest.environmentUrl || getEnvironmentUrl().replace('.apps.', '.live.')).replace(/\\\
+          /+$/, '');\n  return async (body) => {\n    const r = await fetchRetry(`${base}/api/v2/metrics/ingest`, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },\n      body,\n    }, 'Metric ingest');\n    const text = await r.text();\n    if (r.status !== 202) throw new Error(`Metric ingest failed (${r.status}) at ${base}: ${text}`);\n    const res = text ? JSON.parse(text) : {};\n    if (res.linesInvalid) console.log(`WARNING: ${res.linesInvalid} invalid lines: ${JSON.stringify(res.error || {})}`);\n  };\n}\n\n// ── Copilot appClass → friendly app name (done here so DQL stays simple) ──\nconst APP_NAMES = {\n  outlook: 'Outlook', word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint', onenote: 'OneNote',\n  bizchat: 'Copilot Chat (Work)', webchat: 'Copilot Chat (Web)', teams: 'Teams',\n  privatechat: 'Teams Private Chat', forms: 'Forms', sharepoint: 'SharePoint', stream: 'Stream',\n  loop: 'Loop', m365app: 'M365\
+          \ App', planner: 'Planner', whiteboard: 'Whiteboard',\n  officecopilotsearchanswer: 'Copilot Search', officecopilotnotebook: 'Copilot Notebook',\n};\nfunction appName(appClass) {\n  const key = String(appClass || 'unknown').toLowerCase().split(/[._]/).pop();\n  return APP_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);\n}\n\n// ── RFC 4180 CSV parser (the Graph report quotes display names containing commas) ──\nfunction parseCsv(text) {\n  const rows = []; let row = []; let field = ''; let q = false;\n  text = text.replace(/^\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else q = false; }\n      else field += c;\n    } else if (c === '\"') q = true;\n    else if (c === ',') { row.push(field); field = ''; }\n    else if (c === '\\n' || c === '\\r') {\n      if (c === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(field); field = '';\n      if\
+          \ (row.some((f) => f !== '')) rows.push(row);\n      row = [];\n    } else field += c;\n  }\n  row.push(field);\n  if (row.some((f) => f !== '')) rows.push(row);\n  const [header = [], ...data] = rows;\n  const h = header.map((x) => x.trim());\n  return data.map((r) => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));\n}\n\n// ── Loop item: newer runtimes pass it directly, older ones via actionExecution ──\nasync function loopItem(ctx) {\n  if (ctx && ctx.loopItemValue !== undefined) return ctx.loopItemValue;\n  if (ctx && ctx.action_execution_id) {\n    const ae = await actionExecution(ctx.action_execution_id);\n    return ae.loopItem?.item;\n  }\n  throw new Error('No loop item available');\n}\n\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push({ idx: out.length, users: arr.slice(i, i + size) });\n  return out;\n}\n\n// Task 5 — aggregate\n// Merges first pass + retry, pulls the org directory once (all enabled\
+          \ users with\n// their manager inline — ~1 Graph call per 999 users), resolves each licensed user's\n// department, and ingests per-user, per-app, org and run-health metrics.\nexport default async function (ctx) {\n  const exe = await loadConfig(ctx);\n  const plan = await exe.result('collect');\n  const read = async (task) => {\n    try { return asArray(await exe.result(task)).flatMap((b) => (b && b.users) || []); }\n    catch (e) { console.log(`${task}: no results (${e.message})`); return []; }\n  };\n\n  const first = await read('count_prompts');\n  const retry = await read('retry_prompts');\n\n  const final = new Map(first.map((u) => [u.upn, u]));\n  for (const u of retry) {\n    const prev = final.get(u.upn);\n    if (!prev || u.status !== 'retry' || u.prompts >= prev.prompts) final.set(u.upn, u);\n  }\n  const users = [...final.values()];\n  const expected = plan.batches.reduce((n, b) => n + b.users.length, 0);\n  const status = users.reduce((m, u) => ((m[u.status] = (m[u.status]\
+          \ || 0) + 1), m), {});\n\n  // ── Org directory ──\n  let org = null;\n  if (CONFIG.orgHierarchy) {\n    try { org = await loadDirectory(); }\n    catch (e) { console.log(`Org directory failed — departments will be \"Unknown\": ${e.message}`); }\n  }\n\n  const lines = [];\n  const byApp = {};\n  const licensed = new Set(users.map((u) => u.upn.toLowerCase()));\n  // Only users with a complete count are written. An errored or incomplete user is\n  // left out rather than written as 0, which would show them as an unused licence.\n  const counted = users.filter((u) => u.status === 'ok');\n  for (const u of counted) {\n    const person = org && org.byUpn.get(u.upn.toLowerCase());\n    lines.push(line('user_prompts', { upn: u.upn, user: u.name, department: resolveDepartment(u, person, org) }, u.prompts));\n    for (const [app, n] of Object.entries(u.byApp || {})) byApp[app] = (byApp[app] || 0) + n;\n  }\n  for (const [app, n] of Object.entries(byApp)) lines.push(line('prompts_by_app',\
+          \ { app }, n));\n\n  if (org && CONFIG.emitOrgMembership) {\n    const scope = CONFIG.orgMembershipScope === 'all' ? org.people : org.people.filter((p) => licensed.has(p.upn.toLowerCase()));\n    for (const p of scope) {\n      const attrs = Object.fromEntries(Object.keys(CONFIG.orgAttributes).map((k) => [k, p.attrs[k]]));\n      const mgr = p.managerId && org.byId.get(p.managerId);\n      if (mgr) lines.push(line('org_manager', { upn: p.upn, user: p.name, manager: mgr.name, ...attrs }, 1));\n      for (const a of ancestors(p, org)) lines.push(line('org_membership', { upn: p.upn, user: p.name, ancestor: a.name, ancestor_upn: a.upn, ...attrs }, 1));\n    }\n    lines.push(line('org_users', {}, org.people.length));\n    lines.push(line('org_cycles_guarded', {}, org.cycles));\n  }\n\n  lines.push(line('run_users_expected', {}, expected));\n  lines.push(line('run_users_reported', {}, users.length));\n  lines.push(line('run_users_missing', {}, expected - users.length));\n  for (const\
+          \ s of ['ok', 'retry', 'error']) lines.push(line('run_users_status', { status: s }, status[s] || 0));\n  lines.push(line('run_users_capped', {}, users.filter((u) => u.capped).length));\n\n  await ingest(lines);\n\n  // A mostly-failed run is a setup problem (permissions, URL, token), not real data: fail loudly.\n  const failed = users.length - counted.length;\n  if (users.length && failed / users.length > 0.5) {\n    const reasons = users.filter((u) => u.error).reduce((m, u) => ((m[u.error] = (m[u.error] || 0) + 1), m), {});\n    const top = Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([r, n]) => `${n}× ${r}`).join('; ');\n    throw new Error(`${failed}/${users.length} users could not be counted, so per-user metrics were not written for them. Most common: ${top}`);\n  }\n\n  const active = users.filter((u) => u.prompts > 0).length;\n  const summary = {\n    expected, reported: users.length, status,\n    active, activationPct: users.length ? Math.round((active\
+          \ / users.length) * 100) : 0,\n    counted: counted.length,\n    totalPrompts: counted.reduce((n, u) => n + u.prompts, 0),\n    retried: retry.length, orgUsers: org ? org.people.length : 0, linesIngested: lines.length,\n  };\n  console.log(JSON.stringify(summary));\n  return summary;\n}\n\n// All enabled users with manager inline. $expand + simple accountEnabled filter is\n// supported together; extension-attribute filters are not, so attributes are read in code.\nasync function loadDirectory() {\n  const H = { Authorization: `Bearer ${await graphToken()}`, ConsistencyLevel: 'eventual' };\n  let url = 'https://graph.microsoft.com/v1.0/users' +\n    '?$select=id,userPrincipalName,displayName,onPremisesExtensionAttributes' +\n    '&$expand=manager($select=id,displayName,userPrincipalName)' +\n    '&$filter=accountEnabled eq true&$top=999&$count=true';\n  const people = [];\n  while (url) {\n    const r = await fetchRetry(url, { headers: H }, 'Graph /users', { retries: 5 });\n   \
+          \ if (!r.ok) throw new Error(`/users ${r.status}: ${await r.text()}`);\n    const page = await r.json();\n    for (const u of page.value || []) {\n      if (!u.userPrincipalName) continue;\n      const ext = u.onPremisesExtensionAttributes || {};\n      people.push({\n        id: u.id, upn: u.userPrincipalName,\n        name: u.displayName || u.userPrincipalName.split('@')[0],\n        managerId: u.manager ? u.manager.id : null,\n        attrs: Object.fromEntries(Object.entries(CONFIG.orgAttributes).map(([dim, f]) => [dim, ext[f] || 'Unknown'])),\n      });\n    }\n    url = page['@odata.nextLink'] || null;\n  }\n  const org = { people, byId: new Map(people.map((p) => [p.id, p])), byUpn: new Map(people.map((p) => [p.upn.toLowerCase(), p])), cycles: 0 };\n  console.log(`Org directory: ${people.length} enabled users, ${people.filter((p) => p.managerId).length} with a manager`);\n  return org;\n}\n\n// Manager chain, nearest first. Cycle- and depth-guarded.\nfunction ancestors(p,\
+          \ org) {\n  const out = []; const seen = new Set([p.id]);\n  let cur = p.managerId;\n  while (cur && out.length < 25) {\n    if (seen.has(cur)) { org.cycles++; break; }\n    seen.add(cur);\n    const a = org.byId.get(cur);\n    if (!a) break; // manager outside the enabled set\n    out.push(a);\n    cur = a.managerId;\n  }\n  return out;\n}\n\n// departmentSource \"attribute\": department = configured org attribute (e.g. business_unit).\n// departmentSource \"managerChain\" (default): walk self → manager → … and take the first\n// configured department whose head matches by UPN or display name (nearest wins).\nfunction resolveDepartment(u, person, org) {\n  if (!CONFIG.orgHierarchy) return CONFIG.unassignedLabel;\n  if (!org) return 'Unknown';\n  if (!person) return CONFIG.unassignedLabel; // licensed but not in enabled directory\n  if (CONFIG.departmentSource === 'attribute') {\n    const v = person.attrs[CONFIG.departmentAttribute];\n    return v && v !== 'Unknown' ? v : CONFIG.unassignedLabel;\n\
+          \  }\n  const heads = CONFIG.departments.map((d) => ({ name: d.name, keys: new Set(d.heads.map((h) => h.toLowerCase())) }));\n  for (const node of [person, ...ancestors(person, org)]) {\n    for (const d of heads) if (d.keys.has(node.upn.toLowerCase()) || d.keys.has(node.name.toLowerCase())) return d.name;\n  }\n  return CONFIG.unassignedLabel;\n}\n"
+      action: dynatrace.automations:run-javascript
+      active: true
+      position:
+        x: 0
+        y: 6
+      conditions:
+        states:
+          retry_prompts: ANY
+      description: Merge, resolve departments, ingest per-user/per-app/health metrics
+      predecessors:
+      - retry_prompts
+    plan_retry:
+      name: plan_retry
+      input:
+        script: "import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';\nimport { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ─────────────────────────────────────────────────────────────────────────────\n//  Shared helpers — inlined into every task script by build.mjs.\n//  Settings come from the \"config\" task (edit them there, not here).\n// ─────────────────────────────────────────────────────────────────────────────\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);\n\nlet CONFIG = null;\nasync function loadConfig(ctx) {\n  const exe = await execution(ctx.execution_id);\n  CONFIG = await exe.result('config');\n  if (!CONFIG || !CONFIG.graph) throw new Error('No settings from the \"config\" task');\n  return exe;\n}\n\n// fetch with exponential backoff on network\
+          \ errors / 429 / 5xx, honouring Retry-After.\n// Returns the final Response (possibly non-OK); throws only if the network never answers.\nasync function fetchRetry(url, opts = {}, label = url, { retries = 4, deadline = Infinity } = {}) {\n  for (let attempt = 1; ; attempt++) {\n    let resp, err;\n    try { resp = await fetch(url, opts); } catch (e) { err = e; }\n    const retryable = err || resp.status === 429 || resp.status >= 500;\n    if (!retryable) return resp;\n    if (attempt > retries) {\n      if (err) throw new Error(`${label}: network error after ${retries} retries: ${err.message}`);\n      return resp;\n    }\n    const ra = resp ? parseInt(resp.headers.get('Retry-After') || '0', 10) : 0;\n    const wait = ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** (attempt - 1), 15000);\n    if (Date.now() + wait > deadline) { if (err) throw err; return resp; }\n    console.log(`${label}: ${err ? 'network error' : resp.status} — retry ${attempt} in ${wait}ms`);\n    await sleep(wait);\n\
+          \  }\n}\n\n// Client-credentials token for Microsoft Graph. Client ID/secret live in the\n// Dynatrace credential vault (type: username/password, scope: AppEngine) —\n// never in the script, never returned in task results.\nasync function graphToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.graph.credentialId });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: 'https://graph.microsoft.com/.default',\n    grant_type: 'client_credentials',\n  }).toString();\n  const r = await fetchRetry(\n    `https://login.microsoftonline.com/${CONFIG.graph.tenantId}/oauth2/v2.0/token`,\n    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },\n    'OAuth'\n  );\n  if (!r.ok) throw new Error(`OAuth failed (${r.status}): ${await r.text()}`);\n  return (await r.json()).access_token;\n}\n\n// ── Metric line protocol ──\nconst metric = (name) => `${CONFIG.metricPrefix}.${name}`;\n\
+          function dimValue(v) {\n  const s = String(v ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 240);\n  return '\"' + s.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n}\nfunction line(name, dims, value) {\n  const d = Object.entries(dims || {}).map(([k, v]) => `,${k}=${dimValue(v)}`).join('');\n  return `${metric(name)}${d} gauge,${value}`;\n}\n// Two ingest modes:\n//  • ingest.credentialId set → classic Metrics API v2 with a Dynatrace API token read from\n//    the credential vault (Token credential, scope \"metrics.ingest\", vault scope App Engine).\n//  • otherwise → platform SDK as the workflow actor (needs openpipeline:metrics:ingest).\nasync function ingest(lines) {\n  const viaToken = !!(CONFIG.ingest && CONFIG.ingest.credentialId);\n  const send = viaToken ? await tokenSender() : sdkSender;\n  for (let i = 0; i < lines.length; i += 900) {\n    const chunk = lines.slice(i, i + 900);\n    await send(chunk.join('\\n'));\n    console.log(`Ingested ${chunk.length}\
+          \ lines (${i + chunk.length}/${lines.length}) via ${viaToken ? 'API token' : 'SDK'}`);\n  }\n}\n\nasync function sdkSender(body) {\n  try {\n    await metricsClient.ingest({ body });\n  } catch (e) {\n    if (/403|permission/i.test(String(e && e.message))) {\n      throw new Error(`Metric ingest refused for the workflow actor (${e.message}). Either grant the actor ` +\n        `\"openpipeline:metrics:ingest\" (IAM policy: ALLOW openpipeline:metrics:ingest;) or set ingest.credentialId ` +\n        `in the config task to a vault Token credential holding an API token with the metrics.ingest scope.`);\n    }\n    throw e;\n  }\n}\n\nasync function tokenSender() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.ingest.credentialId });\n  const token = cred.token || cred.password;\n  if (!token) throw new Error(`${CONFIG.ingest.credentialId} holds no token`);\n  const base = (CONFIG.ingest.environmentUrl || getEnvironmentUrl().replace('.apps.', '.live.')).replace(/\\\
+          /+$/, '');\n  return async (body) => {\n    const r = await fetchRetry(`${base}/api/v2/metrics/ingest`, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },\n      body,\n    }, 'Metric ingest');\n    const text = await r.text();\n    if (r.status !== 202) throw new Error(`Metric ingest failed (${r.status}) at ${base}: ${text}`);\n    const res = text ? JSON.parse(text) : {};\n    if (res.linesInvalid) console.log(`WARNING: ${res.linesInvalid} invalid lines: ${JSON.stringify(res.error || {})}`);\n  };\n}\n\n// ── Copilot appClass → friendly app name (done here so DQL stays simple) ──\nconst APP_NAMES = {\n  outlook: 'Outlook', word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint', onenote: 'OneNote',\n  bizchat: 'Copilot Chat (Work)', webchat: 'Copilot Chat (Web)', teams: 'Teams',\n  privatechat: 'Teams Private Chat', forms: 'Forms', sharepoint: 'SharePoint', stream: 'Stream',\n  loop: 'Loop', m365app: 'M365\
+          \ App', planner: 'Planner', whiteboard: 'Whiteboard',\n  officecopilotsearchanswer: 'Copilot Search', officecopilotnotebook: 'Copilot Notebook',\n};\nfunction appName(appClass) {\n  const key = String(appClass || 'unknown').toLowerCase().split(/[._]/).pop();\n  return APP_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);\n}\n\n// ── RFC 4180 CSV parser (the Graph report quotes display names containing commas) ──\nfunction parseCsv(text) {\n  const rows = []; let row = []; let field = ''; let q = false;\n  text = text.replace(/^\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else q = false; }\n      else field += c;\n    } else if (c === '\"') q = true;\n    else if (c === ',') { row.push(field); field = ''; }\n    else if (c === '\\n' || c === '\\r') {\n      if (c === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(field); field = '';\n      if\
+          \ (row.some((f) => f !== '')) rows.push(row);\n      row = [];\n    } else field += c;\n  }\n  row.push(field);\n  if (row.some((f) => f !== '')) rows.push(row);\n  const [header = [], ...data] = rows;\n  const h = header.map((x) => x.trim());\n  return data.map((r) => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));\n}\n\n// ── Loop item: newer runtimes pass it directly, older ones via actionExecution ──\nasync function loopItem(ctx) {\n  if (ctx && ctx.loopItemValue !== undefined) return ctx.loopItemValue;\n  if (ctx && ctx.action_execution_id) {\n    const ae = await actionExecution(ctx.action_execution_id);\n    return ae.loopItem?.item;\n  }\n  throw new Error('No loop item available');\n}\n\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push({ idx: out.length, users: arr.slice(i, i + size) });\n  return out;\n}\n\n// Task 3 — plan_retry\n// Finds users that are missing (a batch died) or came back as 'retry',\n\
+          // and re-batches them smaller for a second pass.\nexport default async function (ctx) {\n  const exe = await loadConfig(ctx);\n  const plan = await exe.result('collect');\n  const expected = plan.batches.flatMap((b) => b.users);\n\n  const seen = new Map();\n  try {\n    for (const b of asArray(await exe.result('count_prompts'))) for (const u of (b && b.users) || []) seen.set(u.upn, u);\n  } catch (e) {\n    console.log(`count_prompts results unavailable: ${e.message}`);\n  }\n\n  const todo = expected.filter((u) => !seen.has(u.upn) || seen.get(u.upn).status === 'retry');\n  console.log(`Expected ${expected.length}, returned ${seen.size}, to retry ${todo.length}`);\n  todo.slice(0, 50).forEach((u) => console.log(`  retry: ${u.upn}`));\n\n  return { retryCount: todo.length, retryBatches: chunk(todo, CONFIG.retryBatchSize) };\n}\n"
+      action: dynatrace.automations:run-javascript
+      active: true
+      position:
+        x: 0
+        y: 4
+      conditions:
+        states:
+          count_prompts: ANY
+      description: Find users missing or incomplete after first pass
+      predecessors:
+      - count_prompts
+    count_prompts:
+      name: count_prompts
+      input:
+        script: "import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';\nimport { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ─────────────────────────────────────────────────────────────────────────────\n//  Shared helpers — inlined into every task script by build.mjs.\n//  Settings come from the \"config\" task (edit them there, not here).\n// ─────────────────────────────────────────────────────────────────────────────\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);\n\nlet CONFIG = null;\nasync function loadConfig(ctx) {\n  const exe = await execution(ctx.execution_id);\n  CONFIG = await exe.result('config');\n  if (!CONFIG || !CONFIG.graph) throw new Error('No settings from the \"config\" task');\n  return exe;\n}\n\n// fetch with exponential backoff on network\
+          \ errors / 429 / 5xx, honouring Retry-After.\n// Returns the final Response (possibly non-OK); throws only if the network never answers.\nasync function fetchRetry(url, opts = {}, label = url, { retries = 4, deadline = Infinity } = {}) {\n  for (let attempt = 1; ; attempt++) {\n    let resp, err;\n    try { resp = await fetch(url, opts); } catch (e) { err = e; }\n    const retryable = err || resp.status === 429 || resp.status >= 500;\n    if (!retryable) return resp;\n    if (attempt > retries) {\n      if (err) throw new Error(`${label}: network error after ${retries} retries: ${err.message}`);\n      return resp;\n    }\n    const ra = resp ? parseInt(resp.headers.get('Retry-After') || '0', 10) : 0;\n    const wait = ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** (attempt - 1), 15000);\n    if (Date.now() + wait > deadline) { if (err) throw err; return resp; }\n    console.log(`${label}: ${err ? 'network error' : resp.status} — retry ${attempt} in ${wait}ms`);\n    await sleep(wait);\n\
+          \  }\n}\n\n// Client-credentials token for Microsoft Graph. Client ID/secret live in the\n// Dynatrace credential vault (type: username/password, scope: AppEngine) —\n// never in the script, never returned in task results.\nasync function graphToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.graph.credentialId });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: 'https://graph.microsoft.com/.default',\n    grant_type: 'client_credentials',\n  }).toString();\n  const r = await fetchRetry(\n    `https://login.microsoftonline.com/${CONFIG.graph.tenantId}/oauth2/v2.0/token`,\n    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },\n    'OAuth'\n  );\n  if (!r.ok) throw new Error(`OAuth failed (${r.status}): ${await r.text()}`);\n  return (await r.json()).access_token;\n}\n\n// ── Metric line protocol ──\nconst metric = (name) => `${CONFIG.metricPrefix}.${name}`;\n\
+          function dimValue(v) {\n  const s = String(v ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 240);\n  return '\"' + s.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n}\nfunction line(name, dims, value) {\n  const d = Object.entries(dims || {}).map(([k, v]) => `,${k}=${dimValue(v)}`).join('');\n  return `${metric(name)}${d} gauge,${value}`;\n}\n// Two ingest modes:\n//  • ingest.credentialId set → classic Metrics API v2 with a Dynatrace API token read from\n//    the credential vault (Token credential, scope \"metrics.ingest\", vault scope App Engine).\n//  • otherwise → platform SDK as the workflow actor (needs openpipeline:metrics:ingest).\nasync function ingest(lines) {\n  const viaToken = !!(CONFIG.ingest && CONFIG.ingest.credentialId);\n  const send = viaToken ? await tokenSender() : sdkSender;\n  for (let i = 0; i < lines.length; i += 900) {\n    const chunk = lines.slice(i, i + 900);\n    await send(chunk.join('\\n'));\n    console.log(`Ingested ${chunk.length}\
+          \ lines (${i + chunk.length}/${lines.length}) via ${viaToken ? 'API token' : 'SDK'}`);\n  }\n}\n\nasync function sdkSender(body) {\n  try {\n    await metricsClient.ingest({ body });\n  } catch (e) {\n    if (/403|permission/i.test(String(e && e.message))) {\n      throw new Error(`Metric ingest refused for the workflow actor (${e.message}). Either grant the actor ` +\n        `\"openpipeline:metrics:ingest\" (IAM policy: ALLOW openpipeline:metrics:ingest;) or set ingest.credentialId ` +\n        `in the config task to a vault Token credential holding an API token with the metrics.ingest scope.`);\n    }\n    throw e;\n  }\n}\n\nasync function tokenSender() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.ingest.credentialId });\n  const token = cred.token || cred.password;\n  if (!token) throw new Error(`${CONFIG.ingest.credentialId} holds no token`);\n  const base = (CONFIG.ingest.environmentUrl || getEnvironmentUrl().replace('.apps.', '.live.')).replace(/\\\
+          /+$/, '');\n  return async (body) => {\n    const r = await fetchRetry(`${base}/api/v2/metrics/ingest`, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },\n      body,\n    }, 'Metric ingest');\n    const text = await r.text();\n    if (r.status !== 202) throw new Error(`Metric ingest failed (${r.status}) at ${base}: ${text}`);\n    const res = text ? JSON.parse(text) : {};\n    if (res.linesInvalid) console.log(`WARNING: ${res.linesInvalid} invalid lines: ${JSON.stringify(res.error || {})}`);\n  };\n}\n\n// ── Copilot appClass → friendly app name (done here so DQL stays simple) ──\nconst APP_NAMES = {\n  outlook: 'Outlook', word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint', onenote: 'OneNote',\n  bizchat: 'Copilot Chat (Work)', webchat: 'Copilot Chat (Web)', teams: 'Teams',\n  privatechat: 'Teams Private Chat', forms: 'Forms', sharepoint: 'SharePoint', stream: 'Stream',\n  loop: 'Loop', m365app: 'M365\
+          \ App', planner: 'Planner', whiteboard: 'Whiteboard',\n  officecopilotsearchanswer: 'Copilot Search', officecopilotnotebook: 'Copilot Notebook',\n};\nfunction appName(appClass) {\n  const key = String(appClass || 'unknown').toLowerCase().split(/[._]/).pop();\n  return APP_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);\n}\n\n// ── RFC 4180 CSV parser (the Graph report quotes display names containing commas) ──\nfunction parseCsv(text) {\n  const rows = []; let row = []; let field = ''; let q = false;\n  text = text.replace(/^\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else q = false; }\n      else field += c;\n    } else if (c === '\"') q = true;\n    else if (c === ',') { row.push(field); field = ''; }\n    else if (c === '\\n' || c === '\\r') {\n      if (c === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(field); field = '';\n      if\
+          \ (row.some((f) => f !== '')) rows.push(row);\n      row = [];\n    } else field += c;\n  }\n  row.push(field);\n  if (row.some((f) => f !== '')) rows.push(row);\n  const [header = [], ...data] = rows;\n  const h = header.map((x) => x.trim());\n  return data.map((r) => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));\n}\n\n// ── Loop item: newer runtimes pass it directly, older ones via actionExecution ──\nasync function loopItem(ctx) {\n  if (ctx && ctx.loopItemValue !== undefined) return ctx.loopItemValue;\n  if (ctx && ctx.action_execution_id) {\n    const ae = await actionExecution(ctx.action_execution_id);\n    return ae.loopItem?.item;\n  }\n  throw new Error('No loop item available');\n}\n\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push({ idx: out.length, users: arr.slice(i, i + size) });\n  return out;\n}\n\n// Tasks 2 & 4 — count_prompts / retry_prompts (same script, looped over batches)\n// For each\
+          \ user: counts userPrompt interactions in the trailing window (total + per app).\n// (Org structure is pulled once in aggregate.) Never throws — every user comes back with a status:\n//   ok     complete\n//   retry  incomplete for a transient reason (time budget, 429/5xx) → retried later\n//   error  permanent (e.g. 403/404) → reported, not retried\nexport default async function (ctx) {\n  const started = Date.now();\n  let batch = { idx: -1, users: [] };\n  try {\n    batch = await loopItem(ctx);\n    await loadConfig(ctx);\n    const deadline = started + CONFIG.timeBudgetMs;\n    const H = { Authorization: `Bearer ${await graphToken()}` };\n    const cutoff = Date.now() - CONFIG.promptWindowDays * 86400000;\n\n    const users = await Promise.all(batch.users.map((u) => countUser(u, H, cutoff, deadline)));\n    const s = users.reduce((m, u) => ((m[u.status] = (m[u.status] || 0) + 1), m), {});\n    console.log(`Batch ${batch.idx}: ${JSON.stringify(s)} in ${Math.round((Date.now()\
+          \ - started) / 1000)}s`);\n    // Show why users failed (distinct reasons, first example of each)\n    const reasons = new Map();\n    for (const u of users) if (u.error && !reasons.has(u.error)) reasons.set(u.error, u.upn);\n    for (const [reason, upn] of reasons) console.log(`  ${u_status(users, reason)} e.g. ${upn}: ${reason}`);\n    return { batch: batch.idx, users };\n  } catch (e) {\n    console.log(`Batch ${batch.idx} failed: ${e.message}`);\n    return { batch: batch.idx, users: batch.users.map((u) => ({ ...u, prompts: 0, byApp: {}, status: 'retry', error: e.message })) };\n  }\n}\n\nfunction u_status(users, reason) {\n  const n = users.filter((u) => u.error === reason).length;\n  return `${n} user${n === 1 ? '' : 's'}`;\n}\n\n// UPN in a URL path: keep '@' literal (Graph's /copilot/users/{id} path does not\n// decode %40), escape everything else that's unsafe.\nconst userPath = (upn) => encodeURIComponent(upn).replace(/%40/g, '@');\n\nasync function countUser(user, H,\
+          \ cutoff, deadline) {\n  const res = { upn: user.upn, name: user.name, prompts: 0, byApp: {}, status: 'ok' };\n  let url = `https://graph.microsoft.com/beta/copilot/users/${userPath(user.upn)}/interactionHistory/getAllEnterpriseInteractions?$top=${CONFIG.pageSize}`;\n  let pages = 0;\n  try {\n    while (url) {\n      if (pages >= CONFIG.maxPagesPerUser) { res.status = 'ok'; res.capped = true; break; }\n      if (Date.now() > deadline) { res.status = 'retry'; break; }\n      const r = await fetchRetry(url, { headers: H }, `Interactions ${user.upn}`, { retries: 3, deadline });\n      if (!r.ok) {\n        res.status = r.status === 429 || r.status >= 500 ? 'retry' : 'error';\n        let detail = '';\n        try {\n          const body = await r.text();\n          try { const j = JSON.parse(body).error || {}; detail = [j.code, j.message].filter(Boolean).join(': '); }\n          catch { detail = body; }\n        } catch {}\n        res.error = `HTTP ${r.status}${detail ? ' ' + detail.slice(0,\
+          \ 200) : ''}`;\n        break;\n      }\n      const data = await r.json();\n      pages++;\n      for (const it of data.value || []) {\n        if (it.interactionType !== 'userPrompt') continue;           // skip aiResponse / feedback\n        if (new Date(it.createdDateTime).getTime() < cutoff) continue; // trailing window only\n        res.prompts++;\n        const app = appName(it.appClass);\n        res.byApp[app] = (res.byApp[app] || 0) + 1;\n      }\n      url = data['@odata.nextLink'] || null;\n    }\n  } catch (e) {\n    res.status = 'retry';\n    res.error = e.message;\n  }\n  return res;\n}\n"
+      action: dynatrace.automations:run-javascript
+      active: true
+      timeout: 3600
+      position:
+        x: 0
+        y: 3
+      conditions:
+        states:
+          collect: OK
+      withItems: item in {{ result('collect').batches }}
+      concurrency: 3
+      description: Per-user prompt counts
+      predecessors:
+      - collect
+    retry_prompts:
+      name: retry_prompts
+      input:
+        script: "import { execution, actionExecution } from '@dynatrace-sdk/automation-utils';\nimport { credentialVaultClient, metricsClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ─────────────────────────────────────────────────────────────────────────────\n//  Shared helpers — inlined into every task script by build.mjs.\n//  Settings come from the \"config\" task (edit them there, not here).\n// ─────────────────────────────────────────────────────────────────────────────\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);\n\nlet CONFIG = null;\nasync function loadConfig(ctx) {\n  const exe = await execution(ctx.execution_id);\n  CONFIG = await exe.result('config');\n  if (!CONFIG || !CONFIG.graph) throw new Error('No settings from the \"config\" task');\n  return exe;\n}\n\n// fetch with exponential backoff on network\
+          \ errors / 429 / 5xx, honouring Retry-After.\n// Returns the final Response (possibly non-OK); throws only if the network never answers.\nasync function fetchRetry(url, opts = {}, label = url, { retries = 4, deadline = Infinity } = {}) {\n  for (let attempt = 1; ; attempt++) {\n    let resp, err;\n    try { resp = await fetch(url, opts); } catch (e) { err = e; }\n    const retryable = err || resp.status === 429 || resp.status >= 500;\n    if (!retryable) return resp;\n    if (attempt > retries) {\n      if (err) throw new Error(`${label}: network error after ${retries} retries: ${err.message}`);\n      return resp;\n    }\n    const ra = resp ? parseInt(resp.headers.get('Retry-After') || '0', 10) : 0;\n    const wait = ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** (attempt - 1), 15000);\n    if (Date.now() + wait > deadline) { if (err) throw err; return resp; }\n    console.log(`${label}: ${err ? 'network error' : resp.status} — retry ${attempt} in ${wait}ms`);\n    await sleep(wait);\n\
+          \  }\n}\n\n// Client-credentials token for Microsoft Graph. Client ID/secret live in the\n// Dynatrace credential vault (type: username/password, scope: AppEngine) —\n// never in the script, never returned in task results.\nasync function graphToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.graph.credentialId });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: 'https://graph.microsoft.com/.default',\n    grant_type: 'client_credentials',\n  }).toString();\n  const r = await fetchRetry(\n    `https://login.microsoftonline.com/${CONFIG.graph.tenantId}/oauth2/v2.0/token`,\n    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },\n    'OAuth'\n  );\n  if (!r.ok) throw new Error(`OAuth failed (${r.status}): ${await r.text()}`);\n  return (await r.json()).access_token;\n}\n\n// ── Metric line protocol ──\nconst metric = (name) => `${CONFIG.metricPrefix}.${name}`;\n\
+          function dimValue(v) {\n  const s = String(v ?? '').replace(/[\\r\\n]+/g, ' ').slice(0, 240);\n  return '\"' + s.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"';\n}\nfunction line(name, dims, value) {\n  const d = Object.entries(dims || {}).map(([k, v]) => `,${k}=${dimValue(v)}`).join('');\n  return `${metric(name)}${d} gauge,${value}`;\n}\n// Two ingest modes:\n//  • ingest.credentialId set → classic Metrics API v2 with a Dynatrace API token read from\n//    the credential vault (Token credential, scope \"metrics.ingest\", vault scope App Engine).\n//  • otherwise → platform SDK as the workflow actor (needs openpipeline:metrics:ingest).\nasync function ingest(lines) {\n  const viaToken = !!(CONFIG.ingest && CONFIG.ingest.credentialId);\n  const send = viaToken ? await tokenSender() : sdkSender;\n  for (let i = 0; i < lines.length; i += 900) {\n    const chunk = lines.slice(i, i + 900);\n    await send(chunk.join('\\n'));\n    console.log(`Ingested ${chunk.length}\
+          \ lines (${i + chunk.length}/${lines.length}) via ${viaToken ? 'API token' : 'SDK'}`);\n  }\n}\n\nasync function sdkSender(body) {\n  try {\n    await metricsClient.ingest({ body });\n  } catch (e) {\n    if (/403|permission/i.test(String(e && e.message))) {\n      throw new Error(`Metric ingest refused for the workflow actor (${e.message}). Either grant the actor ` +\n        `\"openpipeline:metrics:ingest\" (IAM policy: ALLOW openpipeline:metrics:ingest;) or set ingest.credentialId ` +\n        `in the config task to a vault Token credential holding an API token with the metrics.ingest scope.`);\n    }\n    throw e;\n  }\n}\n\nasync function tokenSender() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CONFIG.ingest.credentialId });\n  const token = cred.token || cred.password;\n  if (!token) throw new Error(`${CONFIG.ingest.credentialId} holds no token`);\n  const base = (CONFIG.ingest.environmentUrl || getEnvironmentUrl().replace('.apps.', '.live.')).replace(/\\\
+          /+$/, '');\n  return async (body) => {\n    const r = await fetchRetry(`${base}/api/v2/metrics/ingest`, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },\n      body,\n    }, 'Metric ingest');\n    const text = await r.text();\n    if (r.status !== 202) throw new Error(`Metric ingest failed (${r.status}) at ${base}: ${text}`);\n    const res = text ? JSON.parse(text) : {};\n    if (res.linesInvalid) console.log(`WARNING: ${res.linesInvalid} invalid lines: ${JSON.stringify(res.error || {})}`);\n  };\n}\n\n// ── Copilot appClass → friendly app name (done here so DQL stays simple) ──\nconst APP_NAMES = {\n  outlook: 'Outlook', word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint', onenote: 'OneNote',\n  bizchat: 'Copilot Chat (Work)', webchat: 'Copilot Chat (Web)', teams: 'Teams',\n  privatechat: 'Teams Private Chat', forms: 'Forms', sharepoint: 'SharePoint', stream: 'Stream',\n  loop: 'Loop', m365app: 'M365\
+          \ App', planner: 'Planner', whiteboard: 'Whiteboard',\n  officecopilotsearchanswer: 'Copilot Search', officecopilotnotebook: 'Copilot Notebook',\n};\nfunction appName(appClass) {\n  const key = String(appClass || 'unknown').toLowerCase().split(/[._]/).pop();\n  return APP_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);\n}\n\n// ── RFC 4180 CSV parser (the Graph report quotes display names containing commas) ──\nfunction parseCsv(text) {\n  const rows = []; let row = []; let field = ''; let q = false;\n  text = text.replace(/^\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) {\n      if (c === '\"') { if (text[i + 1] === '\"') { field += '\"'; i++; } else q = false; }\n      else field += c;\n    } else if (c === '\"') q = true;\n    else if (c === ',') { row.push(field); field = ''; }\n    else if (c === '\\n' || c === '\\r') {\n      if (c === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(field); field = '';\n      if\
+          \ (row.some((f) => f !== '')) rows.push(row);\n      row = [];\n    } else field += c;\n  }\n  row.push(field);\n  if (row.some((f) => f !== '')) rows.push(row);\n  const [header = [], ...data] = rows;\n  const h = header.map((x) => x.trim());\n  return data.map((r) => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));\n}\n\n// ── Loop item: newer runtimes pass it directly, older ones via actionExecution ──\nasync function loopItem(ctx) {\n  if (ctx && ctx.loopItemValue !== undefined) return ctx.loopItemValue;\n  if (ctx && ctx.action_execution_id) {\n    const ae = await actionExecution(ctx.action_execution_id);\n    return ae.loopItem?.item;\n  }\n  throw new Error('No loop item available');\n}\n\nfunction chunk(arr, size) {\n  const out = [];\n  for (let i = 0; i < arr.length; i += size) out.push({ idx: out.length, users: arr.slice(i, i + size) });\n  return out;\n}\n\n// Tasks 2 & 4 — count_prompts / retry_prompts (same script, looped over batches)\n// For each\
+          \ user: counts userPrompt interactions in the trailing window (total + per app).\n// (Org structure is pulled once in aggregate.) Never throws — every user comes back with a status:\n//   ok     complete\n//   retry  incomplete for a transient reason (time budget, 429/5xx) → retried later\n//   error  permanent (e.g. 403/404) → reported, not retried\nexport default async function (ctx) {\n  const started = Date.now();\n  let batch = { idx: -1, users: [] };\n  try {\n    batch = await loopItem(ctx);\n    await loadConfig(ctx);\n    const deadline = started + CONFIG.timeBudgetMs;\n    const H = { Authorization: `Bearer ${await graphToken()}` };\n    const cutoff = Date.now() - CONFIG.promptWindowDays * 86400000;\n\n    const users = await Promise.all(batch.users.map((u) => countUser(u, H, cutoff, deadline)));\n    const s = users.reduce((m, u) => ((m[u.status] = (m[u.status] || 0) + 1), m), {});\n    console.log(`Batch ${batch.idx}: ${JSON.stringify(s)} in ${Math.round((Date.now()\
+          \ - started) / 1000)}s`);\n    // Show why users failed (distinct reasons, first example of each)\n    const reasons = new Map();\n    for (const u of users) if (u.error && !reasons.has(u.error)) reasons.set(u.error, u.upn);\n    for (const [reason, upn] of reasons) console.log(`  ${u_status(users, reason)} e.g. ${upn}: ${reason}`);\n    return { batch: batch.idx, users };\n  } catch (e) {\n    console.log(`Batch ${batch.idx} failed: ${e.message}`);\n    return { batch: batch.idx, users: batch.users.map((u) => ({ ...u, prompts: 0, byApp: {}, status: 'retry', error: e.message })) };\n  }\n}\n\nfunction u_status(users, reason) {\n  const n = users.filter((u) => u.error === reason).length;\n  return `${n} user${n === 1 ? '' : 's'}`;\n}\n\n// UPN in a URL path: keep '@' literal (Graph's /copilot/users/{id} path does not\n// decode %40), escape everything else that's unsafe.\nconst userPath = (upn) => encodeURIComponent(upn).replace(/%40/g, '@');\n\nasync function countUser(user, H,\
+          \ cutoff, deadline) {\n  const res = { upn: user.upn, name: user.name, prompts: 0, byApp: {}, status: 'ok' };\n  let url = `https://graph.microsoft.com/beta/copilot/users/${userPath(user.upn)}/interactionHistory/getAllEnterpriseInteractions?$top=${CONFIG.pageSize}`;\n  let pages = 0;\n  try {\n    while (url) {\n      if (pages >= CONFIG.maxPagesPerUser) { res.status = 'ok'; res.capped = true; break; }\n      if (Date.now() > deadline) { res.status = 'retry'; break; }\n      const r = await fetchRetry(url, { headers: H }, `Interactions ${user.upn}`, { retries: 3, deadline });\n      if (!r.ok) {\n        res.status = r.status === 429 || r.status >= 500 ? 'retry' : 'error';\n        let detail = '';\n        try {\n          const body = await r.text();\n          try { const j = JSON.parse(body).error || {}; detail = [j.code, j.message].filter(Boolean).join(': '); }\n          catch { detail = body; }\n        } catch {}\n        res.error = `HTTP ${r.status}${detail ? ' ' + detail.slice(0,\
+          \ 200) : ''}`;\n        break;\n      }\n      const data = await r.json();\n      pages++;\n      for (const it of data.value || []) {\n        if (it.interactionType !== 'userPrompt') continue;           // skip aiResponse / feedback\n        if (new Date(it.createdDateTime).getTime() < cutoff) continue; // trailing window only\n        res.prompts++;\n        const app = appName(it.appClass);\n        res.byApp[app] = (res.byApp[app] || 0) + 1;\n      }\n      url = data['@odata.nextLink'] || null;\n    }\n  } catch (e) {\n    res.status = 'retry';\n    res.error = e.message;\n  }\n  return res;\n}\n"
+      action: dynatrace.automations:run-javascript
+      active: true
+      timeout: 3600
+      position:
+        x: 0
+        y: 5
+      conditions:
+        else: SKIP
+        custom: '{{ result(''plan_retry'').retryCount > 0 }}'
+        states:
+          plan_retry: OK
+      withItems: item in {{ result('plan_retry').retryBatches }}
+      concurrency: 2
+      description: Second pass for incomplete users (smaller batches)
+      predecessors:
+      - plan_retry
+    studio_exec_costs:
+      name: studio_exec_costs
+      input:
+        script: |-
+          // Dynatrace Workflow – "Run JavaScript" action
+          // Copilot Studio credits pull: daily per-agent Copilot Credit consumption from the
+          // Power Platform licensing API, ingested as bizevents (event.type = copilotstudio.credits.daily).
+          //
+          // Entra app (same app as the Copilot licence pull is fine):
+          //   Register it as a Power Platform management app, or the licensing API returns 403:
+          //     pac admin application register --application-id <client-id>
+          // External requests allowlist (Settings > General > External requests):
+          //   login.microsoftonline.com, api.powerplatform.com, and your own *.live.dynatrace.com host
+          // Bizevents are ingested with an API token held in the credential vault, so the workflow's
+          // own identity doesn't need ingest permissions. Token scope: bizevents.ingest
+          // (if you reuse the metrics.ingest token, add bizevents.ingest to it).
+          //
+          // Schedule daily, ~10:00 UTC. Each run re-pulls LOOKBACK_DAYS because Microsoft restates
+          // recent days; the dashboard de-duplicates on (usage_date, agent, feature, channel, tool, model).
+
+          import { credentialVaultClient } from '@dynatrace-sdk/client-classic-environment-v2';
+          import { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';
+
+          // ---------- config ----------
+          const TENANT_ID = '<entra-tenant-id>';
+          const CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX';        // user/password type: username = clientId, password = secret
+          const DT_TOKEN_CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX'; // token type: Dynatrace API token with bizevents.ingest
+          const DT_ENV_URL = '';           // optional override, e.g. 'https://abc12345.live.dynatrace.com'; blank = derive from this environment
+          const LOOKBACK_DAYS = 3;
+          const DRY_RUN = false;           // true = return what would be ingested, ingest nothing
+          // -----------------------------
+
+          const PP = 'https://api.powerplatform.com';
+          const API_VERSION = '2024-10-01';
+
+          function ingestBaseUrl() {
+            if (DT_ENV_URL) return DT_ENV_URL.replace(/\/$/, '');
+            return getEnvironmentUrl().replace(/\/$/, '').replace('.apps.dynatrace.com', '.live.dynatrace.com');
+          }
+
+          async function ingestBizevents(events) {
+            const cred = await credentialVaultClient.getCredentialsDetails({ id: DT_TOKEN_CREDENTIAL_ID });
+            const url = `${ingestBaseUrl()}/api/v2/bizevents/ingest`;
+            let sent = 0;
+            for (let i = 0; i < events.length; i += 500) {
+              const batch = events.slice(i, i + 500);
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: { Authorization: `Api-Token ${cred.token}`, 'Content-Type': 'application/cloudevent-batch+json' },
+                body: JSON.stringify(batch),
+              });
+              if (!res.ok) throw new Error(`Bizevent ingest ${res.status} on ${url}: ${await res.text()}`);
+              sent += batch.length;
+            }
+            return { sent };
+          }
+
+          async function getToken() {
+            const cred = await credentialVaultClient.getCredentialsDetails({ id: CREDENTIAL_ID });
+            const body = new URLSearchParams({
+              client_id: cred.username,
+              client_secret: cred.password,
+              scope: `${PP}/.default`,
+              grant_type: 'client_credentials',
+            });
+            const res = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body,
+            });
+            if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);
+            return (await res.json()).access_token;
+          }
+
+          async function pp(path, token) {
+            const url = path.startsWith('http') ? path : `${PP}${path}`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+            if (!res.ok) throw new Error(`Power Platform ${res.status} on ${url}: ${await res.text()}`);
+            return res.json();
+          }
+
+          async function environmentNames(token) {
+            const map = {};
+            let next = `/environmentmanagement/environments?api-version=${API_VERSION}`;
+            while (next) {
+              const page = await pp(next, token);
+              for (const e of page.value ?? []) map[e.id] = e.displayName ?? e.id;
+              next = page['@odata.nextLink'];
+            }
+            return map;
+          }
+
+          const isoDay = (d) => d.toISOString().slice(0, 10);
+
+          export default async function () {
+            const token = await getToken();
+            const envNames = await environmentNames(token).catch(() => ({})); // display names are nice-to-have
+
+            // Latest complete usage day (fallback: yesterday UTC)
+            const tenant = await pp(`/licensing/entitlements/MCSMessages?api-version=${API_VERSION}`, token);
+            const lastComplete = tenant?.capacity?.consumed?.lastUpdatedOn
+              ? new Date(tenant.capacity.consumed.lastUpdatedOn)
+              : new Date(Date.now() - 86400000);
+
+            const ingestTs = new Date().toISOString();
+            const events = [];
+            const days = [];
+
+            for (let i = 0; i < LOOKBACK_DAYS; i++) {
+              const day = isoDay(new Date(lastComplete.getTime() - i * 86400000));
+              days.push(day);
+              let cont = '';
+              do {
+                const q =
+                  `/licensing/entitlements/MCSMessages/resources?fromDate=${day}&toDate=${day}` +
+                  `&includeFields=users%2Ctags%2CasOfDate&pageSize=5000&api-version=${API_VERSION}` +
+                  (cont ? `&continuationtoken=${encodeURIComponent(cont)}` : '');
+                const page = await pp(q, token);
+
+                // Live response nests value[] -> resources[]; tolerate the flat documented shape too.
+                const rows = (page.value ?? []).flatMap((v) => v.resources ?? [v]);
+                for (const r of rows) {
+                  const m = r.metadata ?? {};
+                  events.push({
+                    specversion: '1.0',
+                    source: 'powerplatform.licensing',
+                    type: 'copilotstudio.credits.daily',
+                    id: `${day}|${r.resourceId}|${m.FeatureName}|${m.ChannelId}|${m.ToolInvoked}|${m.LLMModel}|${ingestTs}`,
+                    // Event time = ingest time (Grail rejects/clamps old timestamps); the usage day is in usage_date.
+                    time: ingestTs,
+                    data: {
+                      usage_date: day,
+                      ingest_ts: ingestTs,
+                      'environment.id': r.environmentId,
+                      'environment.name': envNames[r.environmentId] ?? r.environmentId,
+                      'agent.id': r.resourceId,
+                      'agent.name': m.ResourceName ?? r.resourceId,
+                      'credits.billed': Number(r.consumed ?? 0),
+                      'credits.non_billed': Number(m.NonBillableQuantity ?? 0),
+                      feature: m.FeatureName ?? 'unknown',
+                      channel: m.ChannelId ?? 'unknown',
+                      tool: m.ToolInvoked ?? 'none',
+                      'llm.model': m.LLMModel ?? 'none',
+                      'knowledge.sources': m.KnowledgeSources ?? null,
+                      users: m.Users ?? null,
+                    },
+                  });
+                }
+                cont = page.continuationtoken || page.continuationToken || '';
+              } while (cont);
+            }
+
+            const ingest = DRY_RUN ? { sent: 0 } : await ingestBizevents(events);
+
+            const byAgent = {};
+            for (const e of events) {
+              const a = (byAgent[e.data['agent.name']] ??= { billed: 0, nonBilled: 0 });
+              a.billed += e.data['credits.billed'];
+              a.nonBilled += e.data['credits.non_billed'];
+            }
+
+            return {
+              dryRun: DRY_RUN,
+              lastCompleteDay: isoDay(lastComplete),
+              days,
+              rows: events.length,
+              eventsSent: ingest.sent,
+              byAgent,
+              sample: events.slice(0, 5).map((e) => e.data),
+            };
+          }
+        sdkMajorVersions:
+          '@dynatrace-sdk/units': '1'
+          '@dynatrace-sdk/client-hub': '2'
+          '@dynatrace-sdk/client-iam': '1'
+          '@dynatrace-sdk/adhoc-utils': '1'
+          '@dynatrace-sdk/http-client': '1'
+          '@dynatrace-sdk/client-query': '1'
+          '@dynatrace-sdk/shared-errors': '1'
+          '@dynatrace-sdk/error-handlers': '1'
+          '@dynatrace-sdk/app-environment': '1'
+          '@dynatrace-sdk/client-document': '1'
+          '@dynatrace-sdk/automation-utils': '2'
+          '@dynatrace-sdk/client-synthetic': '4'
+          '@dynatrace-sdk/user-preferences': '1'
+          '@dynatrace-sdk/client-automation': '8'
+          '@dynatrace-sdk/client-hub-catalog': '0'
+          '@dynatrace-sdk/shared-client-utils': '1'
+          '@dynatrace-sdk/client-extensions-v2': '3'
+          '@dynatrace-sdk/client-resource-store': '1'
+          '@dynatrace-sdk/client-davis-analyzers': '1'
+          '@dynatrace-sdk/client-credential-vault': '1'
+          '@dynatrace-sdk/client-bucket-management': '3'
+          '@dynatrace-sdk/client-app-engine-registry': '3'
+          '@dynatrace-sdk/client-classic-environment-v1': '3'
+          '@dynatrace-sdk/client-classic-environment-v2': '11'
+          '@dynatrace-sdk/client-app-engine-edge-connect': '1'
+          '@dynatrace-sdk/client-service-level-objectives': '1'
+          '@dynatrace-sdk/client-filter-segment-management': '2'
+          '@dynatrace-sdk/client-platform-management-service': '1'
+      action: dynatrace.automations:run-javascript
+      active: false
+      position:
+        x: 0
+        y: 8
+      conditions:
+        states:
+          copilot_licence_pull: OK
+      description: OPTIONAL, disabled by default - Copilot Studio credit consumption (Power Platform API). Needs its own config and bizevents.ingest scope
+      predecessors:
+      - copilot_licence_pull
+    copilot_licence_pull:
+      name: copilot_licence_pull
+      input:
+        script: |-
+          // Dynatrace Workflow – "Run JavaScript" action
+          // Copilot licence pull: purchased / assigned per SKU + per-user licence assignment
+          //
+          // Graph app permissions (application, admin-consented):
+          //   Organization.Read.All  -> /subscribedSkus
+          //   User.Read.All          -> /users filtered by assignedLicenses
+          // External requests allowlist (Settings > General > External requests):
+          //   login.microsoftonline.com, graph.microsoft.com, and your own *.live.dynatrace.com host
+          // Metrics are ingested with an API token (scope: metrics.ingest) held in the credential vault,
+          // so the workflow's own identity doesn't need openpipeline:metrics:ingest.
+
+          import { credentialVaultClient } from '@dynatrace-sdk/client-classic-environment-v2';
+          import { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';
+
+          // ---------- config ----------
+          const TENANT_ID = '<entra-tenant-id>';
+          const CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX';        // user/password type: username = clientId, password = secret
+          const DT_TOKEN_CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX'; // token type: Dynatrace API token with metrics.ingest
+          const DT_ENV_URL = '';           // optional override, e.g. 'https://abc12345.live.dynatrace.com'; blank = derive from this environment
+          const SKU_PATTERN = /COPILOT/i;  // matches Microsoft_365_Copilot etc. (see note on E7 below)
+          const DRY_RUN = false;           // true = return what would be ingested, ingest nothing
+          // -----------------------------
+
+          function ingestBaseUrl() {
+            if (DT_ENV_URL) return DT_ENV_URL.replace(/\/$/, '');
+            return getEnvironmentUrl().replace(/\/$/, '').replace('.apps.dynatrace.com', '.live.dynatrace.com');
+          }
+
+          async function ingestMetrics(lines) {
+            const cred = await credentialVaultClient.getCredentialsDetails({ id: DT_TOKEN_CREDENTIAL_ID });
+            const url = `${ingestBaseUrl()}/api/v2/metrics/ingest`;
+            let accepted = 0;
+            const invalid = [];
+            for (let i = 0; i < lines.length; i += 1000) {
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: { Authorization: `Api-Token ${cred.token}`, 'Content-Type': 'text/plain; charset=utf-8' },
+                body: lines.slice(i, i + 1000).join('\n'),
+              });
+              const text = await res.text();
+              if (!res.ok && res.status !== 400) throw new Error(`Metric ingest ${res.status} on ${url}: ${text}`);
+              const body = text ? JSON.parse(text) : {};
+              accepted += body.linesOk ?? 0;
+              if (body.linesInvalid) invalid.push({ batch: i / 1000, linesInvalid: body.linesInvalid, error: body.error });
+            }
+            return { accepted, invalid };
+          }
+
+          const GRAPH = 'https://graph.microsoft.com/v1.0';
+
+          async function getToken() {
+            const cred = await credentialVaultClient.getCredentialsDetails({ id: CREDENTIAL_ID });
+            const body = new URLSearchParams({
+              client_id: cred.username,
+              client_secret: cred.password,
+              scope: 'https://graph.microsoft.com/.default',
+              grant_type: 'client_credentials',
+            });
+            const res = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body,
+            });
+            if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);
+            return (await res.json()).access_token;
+          }
+
+          async function graphGetAll(url, token, extraHeaders = {}) {
+            const items = [];
+            let next = url;
+            while (next) {
+              const res = await fetch(next, { headers: { Authorization: `Bearer ${token}`, ...extraHeaders } });
+              if (!res.ok) throw new Error(`Graph ${res.status} on ${next}: ${await res.text()}`);
+              const data = await res.json();
+              items.push(...(data.value ?? []));
+              next = data['@odata.nextLink'];
+            }
+            return items;
+          }
+
+          // Metric line protocol: quote + escape dimension values
+          const dim = (v) => `"${String(v ?? 'unknown').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+          export default async function () {
+            const token = await getToken();
+            const lines = [];
+
+            // 1. Tenant-level licence counts per Copilot SKU
+            const skus = await graphGetAll(`${GRAPH}/subscribedSkus`, token);
+            const copilotSkus = skus.filter((s) => SKU_PATTERN.test(s.skuPartNumber) && s.capabilityStatus === 'Enabled');
+
+            for (const s of copilotSkus) {
+              const d = `sku=${dim(s.skuPartNumber)}`;
+              lines.push(`m365copilot.licences.purchased,${d} ${s.prepaidUnits?.enabled ?? 0}`);
+              lines.push(`m365copilot.licences.assigned,${d} ${s.consumedUnits ?? 0}`);
+              lines.push(`m365copilot.licences.suspended,${d} ${s.prepaidUnits?.suspended ?? 0}`);
+            }
+
+            // 2. Per-user licence assignment (deduped by lower-cased UPN)
+            const licensed = new Map();
+            for (const s of copilotSkus) {
+              const url =
+                `${GRAPH}/users?$filter=assignedLicenses/any(x:x/skuId eq ${s.skuId})` +
+                `&$select=userPrincipalName,displayName,department,accountEnabled&$count=true&$top=999`;
+              const users = await graphGetAll(url, token, { ConsistencyLevel: 'eventual' });
+              for (const u of users) {
+                const upn = (u.userPrincipalName || '').toLowerCase();
+                if (upn && !licensed.has(upn)) licensed.set(upn, { ...u, sku: s.skuPartNumber });
+              }
+            }
+
+            for (const [upn, u] of licensed) {
+              lines.push(
+                `m365copilot.user_licensed,upn=${dim(upn)},user=${dim(u.displayName)},` +
+                `department=${dim(u.department || 'Unassigned')},sku=${dim(u.sku)},` +
+                `account_enabled=${dim(u.accountEnabled)} 1`
+              );
+            }
+
+            // 3. Ingest via API token (chunked)
+            const ingest = DRY_RUN ? { accepted: 0, invalid: [] } : await ingestMetrics(lines);
+
+            return {
+              dryRun: DRY_RUN,
+              skus: copilotSkus.map((s) => ({
+                sku: s.skuPartNumber,
+                skuId: s.skuId,
+                purchased: s.prepaidUnits?.enabled ?? 0,
+                assigned: s.consumedUnits ?? 0,
+              })),
+              licensedUsers: licensed.size,
+              disabledAccountsHoldingLicence: [...licensed.values()].filter((u) => u.accountEnabled === false).length,
+              linesSent: DRY_RUN ? 0 : lines.length,
+              linesAccepted: ingest.accepted,
+              invalid: ingest.invalid,
+              sample: lines.slice(0, 10),
+            };
+          }
+        sdkMajorVersions:
+          '@dynatrace-sdk/units': '1'
+          '@dynatrace-sdk/client-hub': '2'
+          '@dynatrace-sdk/client-iam': '1'
+          '@dynatrace-sdk/adhoc-utils': '1'
+          '@dynatrace-sdk/http-client': '1'
+          '@dynatrace-sdk/client-query': '1'
+          '@dynatrace-sdk/shared-errors': '1'
+          '@dynatrace-sdk/error-handlers': '1'
+          '@dynatrace-sdk/app-environment': '1'
+          '@dynatrace-sdk/client-document': '1'
+          '@dynatrace-sdk/automation-utils': '2'
+          '@dynatrace-sdk/client-synthetic': '4'
+          '@dynatrace-sdk/user-preferences': '1'
+          '@dynatrace-sdk/client-automation': '8'
+          '@dynatrace-sdk/client-hub-catalog': '0'
+          '@dynatrace-sdk/shared-client-utils': '1'
+          '@dynatrace-sdk/client-extensions-v2': '3'
+          '@dynatrace-sdk/client-resource-store': '1'
+          '@dynatrace-sdk/client-davis-analyzers': '1'
+          '@dynatrace-sdk/client-credential-vault': '1'
+          '@dynatrace-sdk/client-bucket-management': '3'
+          '@dynatrace-sdk/client-app-engine-registry': '3'
+          '@dynatrace-sdk/client-classic-environment-v1': '3'
+          '@dynatrace-sdk/client-classic-environment-v2': '11'
+          '@dynatrace-sdk/client-app-engine-edge-connect': '1'
+          '@dynatrace-sdk/client-service-level-objectives': '1'
+          '@dynatrace-sdk/client-filter-segment-management': '2'
+          '@dynatrace-sdk/client-platform-management-service': '1'
+      action: dynatrace.automations:run-javascript
+      active: true
+      position:
+        x: 0
+        y: 7
+      conditions:
+        states:
+          aggregate: OK
+      description: EDIT ME - own config block (tenant ID, credential IDs). Purchased/assigned seats and per-user licence list
+      predecessors:
+      - aggregate

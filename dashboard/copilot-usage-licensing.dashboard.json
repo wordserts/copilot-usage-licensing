@@ -1,0 +1,2118 @@
+{
+  "version": 21,
+  "variables": [
+    {
+      "version": 3,
+      "key": "Department",
+      "name": "Department",
+      "type": "query",
+      "visible": true,
+      "editable": true,
+      "input": "timeseries v = max(m365copilot.user_licensed), by:{department}, from: now()-2d\n| fields department\n| sort department asc",
+      "multiple": true
+    },
+    {
+      "version": 3,
+      "key": "SeatPrice",
+      "name": "SeatPrice",
+      "type": "csv",
+      "visible": true,
+      "editable": true,
+      "input": "44.90,46.00,49.39",
+      "multiple": false
+    },
+    {
+      "version": 3,
+      "key": "MinutesPerPrompt",
+      "name": "MinutesPerPrompt",
+      "type": "csv",
+      "visible": true,
+      "editable": true,
+      "input": "6,3,4,5,8,10",
+      "multiple": false,
+      "defaultValue": "6"
+    }
+  ],
+  "tiles": {
+    "0": {
+      "type": "markdown",
+      "content": "# 🤖 Copilot Corporate Stats\n*Microsoft 365 Copilot adoption, usage, licence cost and estimated value — collected daily from Microsoft Graph. Per-user figures cover the trailing 28d.*"
+    },
+    "1": {
+      "type": "markdown",
+      "content": "## 📈 Adoption Overview\n*Assigned licences reconciled against prompt activity in the last 28d. **Assigned = Active + Unused.***"
+    },
+    "2": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = sum(m365copilot.licences.assigned), from: now()-2d\n| fieldsAdd Assigned = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Assigned)\n| fields Assigned",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Assigned",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Assigned",
+          "labelMode": "none",
+          "prefixIcon": "KeyIcon",
+          "recordField": "Assigned"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Assigned",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "3": {
+      "type": "markdown",
+      "content": "**Assigned**\n\nCopilot licences"
+    },
+    "4": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Active = countIf(status == \"Prompting\")",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Active",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Active",
+          "labelMode": "none",
+          "prefixIcon": "CheckmarkIcon",
+          "recordField": "Active"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Active",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "5": {
+      "type": "markdown",
+      "content": "**Active**\n\nprompted in last 28d"
+    },
+    "6": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize a = countIf(status == \"Prompting\"), n = count()\n| fields Adoption = if(n > 0, round(toDouble(a) / n * 100), else: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#2F6863",
+              "field": "Adoption",
+              "value": 80
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "customColor": "#ECA440",
+              "field": "Adoption",
+              "value": 80
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "customColor": "#C4233B",
+              "field": "Adoption",
+              "value": 50
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Adoption",
+          "labelMode": "none",
+          "prefixIcon": "InfoIcon",
+          "recordField": "Adoption"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "percent",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "Adoption",
+            "suffix": "",
+            "unitCategory": "percentage"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "7": {
+      "type": "markdown",
+      "content": "**Adoption**\n\nactive ÷ assigned"
+    },
+    "8": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Unused = countIf(status != \"Prompting\")",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Unused",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Unused",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Unused",
+          "labelMode": "none",
+          "prefixIcon": "WarningTriangleFilledIcon",
+          "recordField": "Unused"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Unused",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "9": {
+      "type": "markdown",
+      "content": "**Unused licences**\n\nassigned, not prompting in 28d · excl. unassigned seats"
+    },
+    "10": {
+      "title": "Licence utilisation",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Seats = count(), by:{status}\n| append [\n  timeseries pu = sum(m365copilot.licences.purchased), asg = sum(m365copilot.licences.assigned), from: now()-2d\n  | fields status = \"Unassigned licence\", Seats = toLong(arrayLast(arrayRemoveNulls(pu)) - arrayLast(arrayRemoveNulls(asg)))\n]\n| filter Seats > 0\n| fields Status = status, Seats",
+      "visualization": "donutChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "legend": {
+            "hidden": true
+          }
+        },
+        "unitsOverrides": [
+          {
+            "identifier": "Seats",
+            "unitCategory": "unspecified",
+            "baseUnit": "count",
+            "displayUnit": null,
+            "decimals": 0,
+            "suffix": "",
+            "delimiter": true,
+            "cascade": null,
+            "added": 0
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "11": {
+      "title": "Licences vs activity",
+      "type": "data",
+      "query": "timeseries Purchased = sum(m365copilot.licences.purchased), Assigned = sum(m365copilot.licences.assigned), `Active (7d, any)` = max(m365copilot.active_users), interval: 1d",
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      },
+      "timeframe": {
+        "tileTimeframe": {
+          "from": "now()-90d",
+          "to": "now()"
+        },
+        "tileTimeframeEnabled": true
+      }
+    },
+    "12": {
+      "title": "Prompt volume trend (rolling 28d)",
+      "type": "data",
+      "query": "timeseries Prompts = sum(m365copilot.prompts_by_app), interval: 1d",
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      },
+      "timeframe": {
+        "tileTimeframe": {
+          "from": "now()-90d",
+          "to": "now()"
+        },
+        "tileTimeframeEnabled": true
+      }
+    },
+    "13": {
+      "type": "markdown",
+      "content": "## 💰 Estimated Value (AUD)\n*Uses Microsoft's Copilot assisted hours / assisted value approach. Prompts × **MinutesPerPrompt** (filter, default 6) ÷ 60 = assisted hours; assisted hours × AUD 83/h = assisted value. **These are estimates, not measured time savings.***"
+    },
+    "14": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.prompts_by_app), by:{app}, from: now()-3d\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(prompts)\n| summarize total = sum(prompts)\n| fields Prompts = total",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Prompts",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Prompts",
+          "labelMode": "none",
+          "prefixIcon": "EditIcon",
+          "recordField": "Prompts"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Prompts",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "15": {
+      "type": "markdown",
+      "content": "**Prompts**\n\nlast 28d"
+    },
+    "16": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.prompts_by_app), by:{app}, from: now()-3d\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(prompts)\n| summarize total = sum(prompts)\n| fields Hours = round(total * toDouble($MinutesPerPrompt) / 60, decimals: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Hours",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Hours",
+          "labelMode": "none",
+          "prefixIcon": "InfoIcon",
+          "recordField": "Hours"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Hours",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "17": {
+      "type": "markdown",
+      "content": "**Assisted hours**\n\nMinutesPerPrompt filter"
+    },
+    "18": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.prompts_by_app), by:{app}, from: now()-3d\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(prompts)\n| summarize total = sum(prompts)\n| fields Value = round(total * toDouble($MinutesPerPrompt) / 60 * 83, decimals: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Value",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Value",
+          "labelMode": "none",
+          "prefixIcon": "CheckmarkIcon",
+          "recordField": "Value"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Value",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "19": {
+      "type": "markdown",
+      "content": "**Assisted value**\n\nAUD 83 / hour"
+    },
+    "20": {
+      "type": "markdown",
+      "content": "**How this compares with Microsoft's figures**\n\n- **Assisted hours**: Microsoft credits 6 min per Copilot action (the default here; lower it with the **MinutesPerPrompt** filter to test a conservative case) — [Copilot Dashboard metric definitions](https://learn.microsoft.com/en-us/viva/insights/org-team-insights/copilot-dashboard), [research basis](https://www.microsoft.com/en-us/worklab/work-trend-index/copilots-earliest-users-teach-us-about-generative-ai-at-work).\n- **Assisted value**: assisted hours × hourly rate. Microsoft's default is US$72/h ([BLS](https://www.bls.gov/news.release/ecec.t04.htm)); this dashboard uses AUD 83/h.\n- **Not included here**: meeting-recap hours, which Microsoft also counts. Expect these figures to be conservative.\n- **More**: [How Microsoft measures AI value](https://www.microsoft.com/en-us/worklab/how-we-measure-the-value-of-ai-at-work) · [Copilot impact report](https://learn.microsoft.com/en-us/viva/insights/advanced/analyst/templates/microsoft-365-copilot-impact)"
+    },
+    "21": {
+      "type": "markdown",
+      "content": "## 🧭 Adoption Journey\n*Assigned licences grouped by 28d prompt count. Use the unused-licence list to drive enablement or reclaim licences.*"
+    },
+    "22": {
+      "title": "Corporate adoption journey (28d)",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| fieldsAdd n = if(status == \"Prompting\", prompts, else: 0)\n| fieldsAdd stage = if(n == 0, 1, else: if(n < 10, 2, else: if(n < 50, 3, else: if(n < 100, 4, else: 5))))\n| summarize Users = count(), by:{stage}\n| fieldsAdd Cohort = if(stage == 1, \"Inactive (0 prompts)\", else: if(stage == 2, \"Exploring (1-9 prompts)\", else: if(stage == 3, \"Adopting (10-49 prompts)\", else: if(stage == 4, \"Embedded (50-99 prompts)\", else: \"Power Users (100+ prompts)\"))))\n| sort stage asc\n| fields Cohort, Users",
+      "visualization": "honeycomb",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "color-palette",
+              "colorPalette": "blue-steel",
+              "comparator": "≥",
+              "field": "Users",
+              "type": "long",
+              "value": null
+            }
+          ]
+        },
+        "honeycomb": {
+          "labels": {
+            "showLabels": true
+          },
+          "legend": {
+            "hidden": true
+          }
+        }
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "23": {
+      "title": "Top 10 power users (28d)",
+      "type": "data",
+      "query": "timeseries p = max(m365copilot.user_prompts), by:{upn, user}\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(p))\n| filterOut isNull(prompts)\n| summarize prompts = max(prompts), by:{upn = lower(upn), user}\n| sort prompts desc\n| limit 10\n| fields User = user, Prompts = prompts",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "columnWidths": {
+            "[\"User\"]": 200
+          }
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Prompts",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "24": {
+      "title": "Unused licences (28d)",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| filter status != \"Prompting\"\n| fields User = user, Department = department, Status = status, UPN = upn\n| sort Status asc, Department asc, User asc",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "25": {
+      "type": "markdown",
+      "content": "## 🧩 App Usage\n*Where Copilot is used. Prompts and assisted hours cover the last 28d; active users per app come from the usage report (7d).*"
+    },
+    "26": {
+      "title": "Prompts per app (28d)",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.prompts_by_app), by:{app}\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(prompts)\n| fields App = app, Prompts = prompts\n| sort Prompts desc",
+      "visualization": "donutChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "truncationMode": "middle"
+        },
+        "legend": {
+          "ratio": 34
+        }
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "27": {
+      "title": "Assisted hours & value per app (28d)",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.prompts_by_app), by:{app}\n| fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(prompts)\n| fields App = app, Prompts = prompts, `Assisted Hours` = round(prompts * toDouble($MinutesPerPrompt) / 60, decimals: 1), `Value (AUD)` = round(prompts * toDouble($MinutesPerPrompt) / 60 * 83)\n| sort Prompts desc",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "columnWidths": {
+            "[\"App\"]": 170
+          }
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 1,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Assisted Hours",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          },
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Value (AUD)",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "28": {
+      "title": "Active users per app (7d)",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.active_users_by_app), by:{app}\n| fieldsAdd Users = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Users)\n| fields App = app, Users\n| sort Users desc",
+      "visualization": "categoricalBarChart",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "chartSettings": {
+          "legend": {
+            "hidden": true
+          }
+        },
+        "unitsOverrides": [
+          {
+            "baseUnit": "none",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "Users",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "29": {
+      "type": "markdown",
+      "content": "## 🏢 Departments\n*Scorecard covers every department, with licence cost and unused spend at the selected **SeatPrice**. Use the **Department** filter at the top to drill into one or more.*"
+    },
+    "30": {
+      "title": "Department scorecard (28d)",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Licensed = count(), Active = countIf(status == \"Prompting\"), Prompts = sum(if(isNull(prompts), 0, else: prompts)), by:{Department = department}\n| fieldsAdd `Adoption %` = round(toDouble(Active) / Licensed * 100), `Prompts / User` = round(toDouble(Prompts) / Licensed, decimals: 1),\n    `Value (AUD, 28d)` = round(Prompts * toDouble($MinutesPerPrompt) / 60 * 83), `Cost (AUD/mo)` = round(Licensed * toDouble($SeatPrice)), `Unused (AUD/mo)` = round((Licensed - Active) * toDouble($SeatPrice)),\n    ROI = round((Prompts * toDouble($MinutesPerPrompt) / 60 * 83) / (Licensed * toDouble($SeatPrice) * 12 / 365 * 28), decimals: 1)\n| sort `Unused (AUD/mo)` desc",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#2F6863",
+              "field": "Adoption %",
+              "value": 80
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "customColor": "#ECA440",
+              "field": "Adoption %",
+              "value": 80
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "customColor": "#C4233B",
+              "field": "Adoption %",
+              "value": 50
+            }
+          ]
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "percent",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "Adoption %",
+            "suffix": "",
+            "unitCategory": "percentage"
+          },
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Value (AUD, 28d)",
+            "suffix": "",
+            "unitCategory": "currency"
+          },
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Cost (AUD/mo)",
+            "suffix": "",
+            "unitCategory": "currency"
+          },
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Unused (AUD/mo)",
+            "suffix": "",
+            "unitCategory": "currency"
+          },
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 1,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "ROI",
+            "suffix": "×",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "31": {
+      "title": "Selected department(s) — adoption",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| filter in(department, array($Department))\n| summarize Active = countIf(status == \"Prompting\"), Enabled = count()\n| fields AdoptionRate = if(Enabled > 0, round(toDouble(Active) / Enabled * 100), else: 0)",
+      "visualization": "gauge",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "label": {
+          "showLabel": false
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "percent",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "AdoptionRate",
+            "suffix": "",
+            "unitCategory": "percentage"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "32": {
+      "title": "Selected department(s) — adoption journey (28d)",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| filter in(department, array($Department))\n| fieldsAdd n = if(status == \"Prompting\", prompts, else: 0)\n| fieldsAdd stage = if(n == 0, 1, else: if(n < 10, 2, else: if(n < 50, 3, else: if(n < 100, 4, else: 5))))\n| summarize Users = count(), by:{stage}\n| fieldsAdd Cohort = if(stage == 1, \"Inactive (0 prompts)\", else: if(stage == 2, \"Exploring (1-9 prompts)\", else: if(stage == 3, \"Adopting (10-49 prompts)\", else: if(stage == 4, \"Embedded (50-99 prompts)\", else: \"Power Users (100+ prompts)\"))))\n| sort stage asc\n| fields Cohort, Users",
+      "visualization": "honeycomb",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "color-palette",
+              "colorPalette": "blue-steel",
+              "comparator": "≥",
+              "field": "Users",
+              "type": "long",
+              "value": null
+            }
+          ]
+        },
+        "honeycomb": {
+          "labels": {
+            "showLabels": true
+          },
+          "legend": {
+            "hidden": true
+          }
+        }
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "33": {
+      "title": "Selected department(s) — users (28d)",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| filter in(department, array($Department))\n| fields User = user, Department = department, Status = status, Prompts = if(isNull(prompts), 0, else: prompts)\n| sort Prompts desc",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "columnWidths": {
+            "[\"User\"]": 180
+          }
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Prompts",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "41": {
+      "type": "markdown",
+      "content": "## 🩺 Collection Health\n*Last workflow run. Missing or errored users are excluded from per-user tiles; check the workflow execution log for details.*"
+    },
+    "42": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.run_users_expected)\n| fieldsAdd Expected = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Expected)\n| fields Expected",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Expected",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Expected",
+          "labelMode": "none",
+          "prefixIcon": "InfoIcon",
+          "recordField": "Expected"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Expected",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "43": {
+      "type": "markdown",
+      "content": "**Expected**\n\nlicensed users"
+    },
+    "44": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.run_users_reported)\n| fieldsAdd Reported = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Reported)\n| fields Reported",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Reported",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Reported",
+          "labelMode": "none",
+          "prefixIcon": "CheckmarkIcon",
+          "recordField": "Reported"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Reported",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "45": {
+      "type": "markdown",
+      "content": "**Reported**\n\nprompt counts"
+    },
+    "46": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.run_users_missing)\n| fieldsAdd Missing = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Missing)\n| fields Missing",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Missing",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Missing",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Missing",
+          "labelMode": "none",
+          "prefixIcon": "CriticalFailedIcon",
+          "recordField": "Missing"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Missing",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "47": {
+      "type": "markdown",
+      "content": "**Missing**\n\nafter retry"
+    },
+    "48": {
+      "title": "",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.run_users_status), by:{status}\n| filter status == \"error\"\n| fields Errors = arrayLast(arrayRemoveNulls(v))",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Errors",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Errors",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Errors",
+          "labelMode": "none",
+          "prefixIcon": "WarningTriangleFilledIcon",
+          "recordField": "Errors"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Errors",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "49": {
+      "type": "markdown",
+      "content": "**Errors**\n\ne.g. 403 / 404"
+    },
+    "50": {
+      "title": "Concealed UPNs",
+      "type": "data",
+      "query": "timeseries v = max(m365copilot.report_concealed_upns)\n| fieldsAdd Concealed = arrayLast(arrayRemoveNulls(v))\n| filterOut isNull(Concealed)\n| fields Concealed",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Concealed",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Concealed",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "labelMode": "none",
+          "prefixIcon": "LockIcon",
+          "recordField": "Concealed"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Concealed",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "51": {
+      "type": "markdown",
+      "content": "## 💳 Licence Cost (AUD)\n*Seat price comes from the **SeatPrice** filter (AUD per user per month — set it to the contract price). **Unused** = every purchased seat not used for prompting in 28d: unassigned, zero prompts, no usage record or disabled account. 28d cost = monthly × 12 ÷ 365 × 28.*"
+    },
+    "52": {
+      "title": "Monthly licence spend",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| fields Spend = round(Purchased * toDouble($SeatPrice))",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "Spend",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Spend",
+          "labelMode": "none",
+          "prefixIcon": "KeyIcon",
+          "recordField": "Spend"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Spend",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "53": {
+      "title": "Unused spend / month",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| lookup [\ntimeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Prompting = countIf(status == \"Prompting\")\n| fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"r.\"\n| fields Unused = round((Purchased - r.Prompting) * toDouble($SeatPrice))",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Unused",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Unused",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Unused",
+          "labelMode": "none",
+          "prefixIcon": "WarningTriangleFilledIcon",
+          "recordField": "Unused"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Unused",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "54": {
+      "title": "Annual reclaim opportunity",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| lookup [\ntimeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Prompting = countIf(status == \"Prompting\")\n| fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"r.\"\n| fields Reclaim = round((Purchased - r.Prompting) * toDouble($SeatPrice) * 12)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": ">",
+              "customColor": "#AE132D",
+              "field": "Reclaim",
+              "value": 0
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "=",
+              "customColor": "#134FC9",
+              "field": "Reclaim",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "Reclaim",
+          "labelMode": "none",
+          "prefixIcon": "WarningTriangleFilledIcon",
+          "recordField": "Reclaim"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Reclaim",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "55": {
+      "title": "Cost per active user / month",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| lookup [\ntimeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Prompting = countIf(status == \"Prompting\")\n| fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"r.\"\n| fields PerUser = if(r.Prompting > 0, round(Purchased * toDouble($SeatPrice) / r.Prompting, decimals: 2), else: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "PerUser",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "PerUser",
+          "labelMode": "none",
+          "prefixIcon": "InfoIcon",
+          "recordField": "PerUser"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 2,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "PerUser",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "56": {
+      "title": "Cost per prompt (28d)",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| lookup [\n  timeseries v = max(m365copilot.prompts_by_app), by:{app}\n  | fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n  | summarize Prompts = sum(prompts)\n  | fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"q.\"\n| fields PerPrompt = if(q.Prompts > 0, round(Purchased * toDouble($SeatPrice) * 12 / 365 * 28 / q.Prompts, decimals: 2), else: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#134FC9",
+              "field": "PerPrompt",
+              "value": 0
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "PerPrompt",
+          "labelMode": "none",
+          "prefixIcon": "EditIcon",
+          "recordField": "PerPrompt"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 2,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "PerPrompt",
+            "suffix": "",
+            "unitCategory": "currency"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "57": {
+      "title": "Value ROI — estimated (assisted value ÷ cost, 28d)",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), from: now()-2d\n| fieldsAdd Purchased = arrayLast(arrayRemoveNulls(pu)), k = 1\n| lookup [\n  timeseries v = max(m365copilot.prompts_by_app), by:{app}\n  | fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n  | summarize Prompts = sum(prompts)\n  | fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"q.\"\n| fields ROI = if(Purchased > 0, round((q.Prompts * toDouble($MinutesPerPrompt) / 60 * 83) / (Purchased * toDouble($SeatPrice) * 12 / 365 * 28), decimals: 1), else: 0)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "coloring": {
+          "colorRules": [
+            {
+              "colorMode": "custom-color",
+              "comparator": "≥",
+              "customColor": "#2F6863",
+              "field": "ROI",
+              "value": 1
+            },
+            {
+              "colorMode": "custom-color",
+              "comparator": "<",
+              "customColor": "#C4233B",
+              "field": "ROI",
+              "value": 1
+            }
+          ]
+        },
+        "singleValue": {
+          "isIconVisible": true,
+          "label": "ROI",
+          "labelMode": "none",
+          "prefixIcon": "CheckmarkIcon",
+          "recordField": "ROI"
+        },
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 1,
+            "delimiter": false,
+            "displayUnit": null,
+            "identifier": "ROI",
+            "suffix": "×",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "58": {
+      "title": "Licence cost by status",
+      "type": "data",
+      "query": "timeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Seats = count(), by:{status}\n| append [\n  timeseries pu = sum(m365copilot.licences.purchased), asg = sum(m365copilot.licences.assigned), from: now()-2d\n  | fields status = \"Unassigned licence\", Seats = toLong(arrayLast(arrayRemoveNulls(pu)) - arrayLast(arrayRemoveNulls(asg)))\n]\n| filter Seats > 0\n| fields Status = status, Seats, `Monthly cost (AUD)` = round(Seats * toDouble($SeatPrice)), `Annual cost (AUD)` = round(Seats * toDouble($SeatPrice) * 12)\n| sort Seats desc",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "unitsOverrides": [
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Monthly cost (AUD)",
+            "suffix": "",
+            "unitCategory": "currency"
+          },
+          {
+            "added": 0,
+            "baseUnit": "aud",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Annual cost (AUD)",
+            "suffix": "",
+            "unitCategory": "currency"
+          },
+          {
+            "added": 0,
+            "baseUnit": "count",
+            "cascade": null,
+            "decimals": 0,
+            "delimiter": true,
+            "displayUnit": null,
+            "identifier": "Seats",
+            "suffix": "",
+            "unitCategory": "unspecified"
+          }
+        ]
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    },
+    "59": {
+      "type": "markdown",
+      "content": "## 🧮 Definitions & Calculations\n*How every number on this dashboard is worked out. The table on the right recalculates live from the same data, so each figure can be checked on screen.*"
+    },
+    "60": {
+      "type": "markdown",
+      "content": "**Definitions**\n\n| Term | Meaning |\n|---|---|\n| **Purchased** | Copilot seats bought (Graph `subscribedSkus` → `prepaidUnits.enabled`) |\n| **Assigned** | Seats assigned to a user (`consumedUnits`) |\n| **Active** | Licensed user with ≥ 1 Copilot prompt in the last 28 days |\n| **Unused** | Purchased seat not used for prompting in 28d — unassigned, zero prompts, no usage record, or disabled account |\n| **Prompts** | Copilot prompts across all apps, trailing 28 days (Graph usage report) |\n| **Assisted hours** | Prompts × **MinutesPerPrompt** ÷ 60 — Microsoft's default is 6 min |\n| **Assisted value** | Assisted hours × AUD 83/h — *estimate, not measured* |\n| **28-day cost** | Monthly spend pro-rated to the 28-day usage window |\n| **Value ROI** | Assisted value ÷ 28-day cost — *estimate* |\n\n*Cost uses **Purchased** seats, because you pay for every seat bought whether assigned or not. The Adoption Overview \"Unused\" tile counts assigned seats only; the cost figures include unassigned seats too.*"
+    },
+    "61": {
+      "title": "Worked calculations — live, follows the SeatPrice and MinutesPerPrompt filters",
+      "type": "data",
+      "query": "timeseries pu = sum(m365copilot.licences.purchased), asg = sum(m365copilot.licences.assigned), from: now()-2d\n| fieldsAdd Purchased = toLong(arrayLast(arrayRemoveNulls(pu))), Assigned = toLong(arrayLast(arrayRemoveNulls(asg))), k = 1\n| lookup [\ntimeseries lic = max(m365copilot.user_licensed), by:{upn, user, department, account_enabled}, from: now()-2d\n| fieldsAdd upn = lower(upn), licensed = arrayLast(arrayRemoveNulls(lic))\n| filterOut isNull(licensed)\n| dedup upn\n| lookup [\n    timeseries p = max(m365copilot.user_prompts), by:{upn}, from: now()-3d\n    | fieldsAdd upn = lower(upn), prompts = arrayLast(arrayRemoveNulls(p))\n    | summarize prompts = max(prompts), by:{upn}\n  ], sourceField:upn, lookupField:upn, prefix:\"u.\"\n| fieldsAdd prompts = u.prompts\n| fieldsAdd status = if(account_enabled == \"false\", \"Disabled account\", else: if(isNull(prompts), \"No usage record\", else: if(prompts == 0, \"Zero prompts\", else: \"Prompting\")))\n| summarize Active = countIf(status == \"Prompting\"), Licensed = count()\n| fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"r.\"\n| lookup [\n  timeseries v = max(m365copilot.prompts_by_app), by:{app}, from: now()-3d\n  | fieldsAdd prompts = arrayLast(arrayRemoveNulls(v))\n  | summarize Prompts = sum(prompts)\n  | fieldsAdd k = 1\n], sourceField:k, lookupField:k, prefix:\"q.\"\n| fieldsAdd Active = r.Active, Licensed = r.Licensed, Prompts = toLong(q.Prompts), price = toDouble($SeatPrice)\n| fieldsAdd Unused = Purchased - Active, Monthly = Purchased * price\n| fieldsAdd Cost28 = Monthly * 12 / 365 * 28, Hours = Prompts * toDouble($MinutesPerPrompt) / 60\n| fieldsAdd Value = Hours * 83\n| fieldsAdd rows = array(\n    record(Step = 1, Metric = \"Purchased seats\", Formula = \"Graph /subscribedSkus prepaidUnits.enabled\", Calculation = \"—\", Result = toString(Purchased)),\n    record(Step = 2, Metric = \"Assigned seats\", Formula = \"Graph /subscribedSkus consumedUnits\", Calculation = \"—\", Result = toString(Assigned)),\n    record(Step = 3, Metric = \"Active users\", Formula = \"Licensed users with ≥1 prompt in 28d\", Calculation = \"—\", Result = toString(Active)),\n    record(Step = 4, Metric = \"Unused seats\", Formula = \"Purchased − Active\", Calculation = concat(toString(Purchased), \" − \", toString(Active)), Result = toString(Unused)),\n    record(Step = 5, Metric = \"  of which unassigned\", Formula = \"Purchased − Assigned\", Calculation = concat(toString(Purchased), \" − \", toString(Assigned)), Result = toString(Purchased - Assigned)),\n    record(Step = 6, Metric = \"Adoption\", Formula = \"Active ÷ licensed users\", Calculation = concat(toString(Active), \" ÷ \", toString(Licensed)), Result = concat(toString(round(toDouble(Active) / Licensed * 100)), \"%\")),\n    record(Step = 7, Metric = \"Monthly spend\", Formula = \"Purchased × SeatPrice\", Calculation = concat(toString(Purchased), \" × A$\", toString($SeatPrice)), Result = concat(\"A$\", toString(toLong(round(Monthly))))),\n    record(Step = 8, Metric = \"Unused spend / month\", Formula = \"Unused × SeatPrice\", Calculation = concat(toString(Unused), \" × A$\", toString($SeatPrice)), Result = concat(\"A$\", toString(toLong(round(Unused * price))))),\n    record(Step = 9, Metric = \"Annual reclaim\", Formula = \"Unused spend × 12\", Calculation = concat(concat(\"A$\", toString(toLong(round(Unused * price)))), \" × 12\"), Result = concat(\"A$\", toString(toLong(round(Unused * price * 12))))),\n    record(Step = 10, Metric = \"Cost per active user\", Formula = \"Monthly spend ÷ Active\", Calculation = concat(concat(\"A$\", toString(toLong(round(Monthly)))), \" ÷ \", toString(Active)), Result = concat(\"A$\", toString(round(Monthly / Active, decimals: 2)))),\n    record(Step = 11, Metric = \"28-day cost\", Formula = \"Monthly × 12 ÷ 365 × 28\", Calculation = concat(concat(\"A$\", toString(toLong(round(Monthly)))), \" × 12 ÷ 365 × 28\"), Result = concat(\"A$\", toString(toLong(round(Cost28))))),\n    record(Step = 12, Metric = \"Prompts (28d)\", Formula = \"Sum of prompts across all Copilot apps\", Calculation = \"—\", Result = toString(Prompts)),\n    record(Step = 13, Metric = \"Assisted hours\", Formula = \"Prompts × MinutesPerPrompt ÷ 60\", Calculation = concat(toString(Prompts), \" × \", toString($MinutesPerPrompt), \" ÷ 60\"), Result = toString(toLong(round(Hours)))),\n    record(Step = 14, Metric = \"Assisted value (est.)\", Formula = \"Assisted hours × A$83\", Calculation = concat(toString(toLong(round(Hours))), \" × A$83\"), Result = concat(\"A$\", toString(toLong(round(Value))))),\n    record(Step = 15, Metric = \"Cost per prompt\", Formula = \"28-day cost ÷ Prompts\", Calculation = concat(concat(\"A$\", toString(toLong(round(Cost28)))), \" ÷ \", toString(Prompts)), Result = concat(\"A$\", toString(round(Cost28 / Prompts, decimals: 2)))),\n    record(Step = 16, Metric = \"Value ROI (est.)\", Formula = \"Assisted value ÷ 28-day cost\", Calculation = concat(concat(\"A$\", toString(toLong(round(Value)))), \" ÷ \", concat(\"A$\", toString(toLong(round(Cost28))))), Result = concat(toString(round(Value / Cost28, decimals: 1)), \"×\")))\n| expand rows\n| fields `#` = rows[Step], Metric = rows[Metric], Formula = rows[Formula], Calculation = rows[Calculation], Result = rows[Result]",
+      "visualization": "table",
+      "visualizationSettings": {
+        "autoSelectVisualization": false,
+        "table": {
+          "columnWidths": {
+            "[\"#\"]": 40,
+            "[\"Metric\"]": 170,
+            "[\"Formula\"]": 260,
+            "[\"Calculation\"]": 230
+          }
+        }
+      },
+      "querySettings": {
+        "maxResultMegaBytes": 1,
+        "maxResultRecords": 1000,
+        "defaultScanLimitGbytes": 500,
+        "enableSampling": false,
+        "defaultSamplingRatio": 10
+      },
+      "davis": {
+        "enabled": false,
+        "davisVisualization": {
+          "isAvailable": true
+        }
+      }
+    }
+  },
+  "layouts": {
+    "0": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 2
+    },
+    "1": {
+      "x": 0,
+      "y": 2,
+      "w": 24,
+      "h": 2
+    },
+    "2": {
+      "x": 0,
+      "y": 4,
+      "w": 3,
+      "h": 3
+    },
+    "3": {
+      "x": 3,
+      "y": 4,
+      "w": 2,
+      "h": 3
+    },
+    "4": {
+      "x": 5,
+      "y": 4,
+      "w": 3,
+      "h": 3
+    },
+    "5": {
+      "x": 8,
+      "y": 4,
+      "w": 2,
+      "h": 3
+    },
+    "6": {
+      "x": 10,
+      "y": 4,
+      "w": 3,
+      "h": 3
+    },
+    "7": {
+      "x": 13,
+      "y": 4,
+      "w": 2,
+      "h": 3
+    },
+    "8": {
+      "x": 15,
+      "y": 4,
+      "w": 3,
+      "h": 3
+    },
+    "9": {
+      "x": 18,
+      "y": 4,
+      "w": 2,
+      "h": 3
+    },
+    "10": {
+      "x": 20,
+      "y": 4,
+      "w": 4,
+      "h": 3
+    },
+    "11": {
+      "x": 0,
+      "y": 7,
+      "w": 12,
+      "h": 4
+    },
+    "12": {
+      "x": 12,
+      "y": 7,
+      "w": 12,
+      "h": 4
+    },
+    "13": {
+      "x": 0,
+      "y": 11,
+      "w": 24,
+      "h": 2
+    },
+    "14": {
+      "x": 0,
+      "y": 13,
+      "w": 3,
+      "h": 3
+    },
+    "15": {
+      "x": 3,
+      "y": 13,
+      "w": 2,
+      "h": 3
+    },
+    "16": {
+      "x": 5,
+      "y": 13,
+      "w": 3,
+      "h": 3
+    },
+    "17": {
+      "x": 8,
+      "y": 13,
+      "w": 2,
+      "h": 3
+    },
+    "18": {
+      "x": 10,
+      "y": 13,
+      "w": 3,
+      "h": 3
+    },
+    "19": {
+      "x": 13,
+      "y": 13,
+      "w": 2,
+      "h": 3
+    },
+    "20": {
+      "x": 15,
+      "y": 13,
+      "w": 9,
+      "h": 3
+    },
+    "21": {
+      "x": 0,
+      "y": 39,
+      "w": 24,
+      "h": 2
+    },
+    "22": {
+      "x": 0,
+      "y": 41,
+      "w": 10,
+      "h": 6
+    },
+    "23": {
+      "x": 10,
+      "y": 41,
+      "w": 7,
+      "h": 6
+    },
+    "24": {
+      "x": 17,
+      "y": 41,
+      "w": 7,
+      "h": 6
+    },
+    "25": {
+      "x": 0,
+      "y": 47,
+      "w": 24,
+      "h": 2
+    },
+    "26": {
+      "x": 0,
+      "y": 49,
+      "w": 8,
+      "h": 7
+    },
+    "27": {
+      "x": 8,
+      "y": 49,
+      "w": 8,
+      "h": 7
+    },
+    "28": {
+      "x": 16,
+      "y": 49,
+      "w": 8,
+      "h": 7
+    },
+    "29": {
+      "x": 0,
+      "y": 56,
+      "w": 24,
+      "h": 2
+    },
+    "30": {
+      "x": 0,
+      "y": 58,
+      "w": 24,
+      "h": 6
+    },
+    "31": {
+      "x": 0,
+      "y": 64,
+      "w": 4,
+      "h": 5
+    },
+    "32": {
+      "x": 4,
+      "y": 64,
+      "w": 10,
+      "h": 5
+    },
+    "33": {
+      "x": 14,
+      "y": 64,
+      "w": 10,
+      "h": 5
+    },
+    "41": {
+      "x": 0,
+      "y": 69,
+      "w": 24,
+      "h": 2
+    },
+    "42": {
+      "x": 0,
+      "y": 71,
+      "w": 3,
+      "h": 3
+    },
+    "43": {
+      "x": 3,
+      "y": 71,
+      "w": 2,
+      "h": 3
+    },
+    "44": {
+      "x": 5,
+      "y": 71,
+      "w": 3,
+      "h": 3
+    },
+    "45": {
+      "x": 8,
+      "y": 71,
+      "w": 2,
+      "h": 3
+    },
+    "46": {
+      "x": 10,
+      "y": 71,
+      "w": 3,
+      "h": 3
+    },
+    "47": {
+      "x": 13,
+      "y": 71,
+      "w": 2,
+      "h": 3
+    },
+    "48": {
+      "x": 15,
+      "y": 71,
+      "w": 3,
+      "h": 3
+    },
+    "49": {
+      "x": 18,
+      "y": 71,
+      "w": 2,
+      "h": 3
+    },
+    "50": {
+      "x": 20,
+      "y": 71,
+      "w": 4,
+      "h": 3
+    },
+    "51": {
+      "x": 0,
+      "y": 16,
+      "w": 24,
+      "h": 2
+    },
+    "52": {
+      "x": 0,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "53": {
+      "x": 4,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "54": {
+      "x": 8,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "55": {
+      "x": 12,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "56": {
+      "x": 16,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "57": {
+      "x": 20,
+      "y": 18,
+      "w": 4,
+      "h": 3
+    },
+    "58": {
+      "x": 0,
+      "y": 21,
+      "w": 24,
+      "h": 5
+    },
+    "59": {
+      "x": 0,
+      "y": 26,
+      "w": 24,
+      "h": 2
+    },
+    "60": {
+      "x": 0,
+      "y": 28,
+      "w": 10,
+      "h": 11
+    },
+    "61": {
+      "x": 10,
+      "y": 28,
+      "w": 14,
+      "h": 10
+    }
+  },
+  "importedWithCode": false,
+  "settings": {
+    "defaultTimeframe": {
+      "value": {
+        "from": "now()-7d",
+        "to": "now()"
+      },
+      "enabled": true
+    }
+  },
+  "annotations": [],
+  "baseQueries": [],
+  "rows": []
+}
