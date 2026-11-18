@@ -48,7 +48,7 @@ Each item is explained in the step shown.
 
 | Where | What | Step |
 |---|---|---|
-| **Microsoft Graph** (application permissions, admin consent) | `Reports.Read.All`, `AiEnterpriseInteraction.Read.All`, `User.Read.All`, `Organization.Read.All`, and optionally `CopilotPackages.Read.All` | 1 |
+| **Microsoft Graph** (application permissions, admin consent) | `Reports.Read.All`, `AiEnterpriseInteraction.Read.All`, `User.Read.All`, `Organization.Read.All`, `CopilotPackages.Read.All` | 1 |
 | **Microsoft 365** setting | Report name concealment switched **off** | 2 |
 | **Dynatrace API token** | Scope `metrics.ingest` only | 3 |
 | **Dynatrace credential vault** | Two credentials (Graph client ID and secret, ingest token), both with **App Engine** scope | 4 |
@@ -75,7 +75,7 @@ IAM permission names differ between tenant generations, so confirm them in your 
 | `AiEnterpriseInteraction.Read.All` | `count_prompts`, `retry_prompts` | Per-user prompt counts (`interactionHistory/getAllEnterpriseInteractions`, beta) |
 | `User.Read.All` | `aggregate`, `copilot_licence_pull` | User directory, manager chain, per-user licence list |
 | `Organization.Read.All` | `copilot_licence_pull` | Purchased and assigned seats (`/subscribedSkus`) |
-| `CopilotPackages.Read.All` | `collect` | *Optional.* Agent inventory (beta). If it is missing, that part is skipped and the run still succeeds. |
+| `CopilotPackages.Read.All` | `collect` | Agent inventory (`copilot/admin/catalog/packages`, beta). If it is missing, the agent metrics are skipped with a log message and the rest of the run still succeeds. To turn the inventory off, set `agentInventory` to `false` in `config`. |
 
 6. Click **Grant admin consent**. Every row should show a green tick.
 
