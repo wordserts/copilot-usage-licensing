@@ -147,57 +147,6 @@
         "plan_retry"
       ]
     },
-    "studio_exec_costs": {
-      "name": "studio_exec_costs",
-      "input": {
-        "script": "// Dynatrace Workflow – \"Run JavaScript\" action\n// Copilot Studio credits pull: daily per-agent Copilot Credit consumption from the\n// Power Platform licensing API, ingested as bizevents (event.type = copilotstudio.credits.daily).\n//\n// Entra app (same app as the Copilot licence pull is fine):\n//   Register it as a Power Platform management app, or the licensing API returns 403:\n//     pac admin application register --application-id <client-id>\n// External requests allowlist (Settings > General > External requests):\n//   login.microsoftonline.com, api.powerplatform.com, and your own *.live.dynatrace.com host\n// Bizevents are ingested with an API token held in the credential vault, so the workflow's\n// own identity doesn't need ingest permissions. Token scope: bizevents.ingest\n// (if you reuse the metrics.ingest token, add bizevents.ingest to it).\n//\n// Schedule daily, ~10:00 UTC. Each run re-pulls LOOKBACK_DAYS because Microsoft restates\n// recent days; the dashboard de-duplicates on (usage_date, agent, feature, channel, tool, model).\n\nimport { credentialVaultClient } from '@dynatrace-sdk/client-classic-environment-v2';\nimport { getEnvironmentUrl } from '@dynatrace-sdk/app-environment';\n\n// ---------- config ----------\nconst TENANT_ID = '<entra-tenant-id>';\nconst CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX';        // user/password type: username = clientId, password = secret\nconst DT_TOKEN_CREDENTIAL_ID = 'CREDENTIALS_VAULT-XXXXXXXXXXXXXXXX'; // token type: Dynatrace API token with bizevents.ingest\nconst DT_ENV_URL = '';           // optional override, e.g. 'https://abc12345.live.dynatrace.com'; blank = derive from this environment\nconst LOOKBACK_DAYS = 3;\nconst DRY_RUN = false;           // true = return what would be ingested, ingest nothing\n// -----------------------------\n\nconst PP = 'https://api.powerplatform.com';\nconst API_VERSION = '2024-10-01';\n\nfunction ingestBaseUrl() {\n  if (DT_ENV_URL) return DT_ENV_URL.replace(/\\/$/, '');\n  return getEnvironmentUrl().replace(/\\/$/, '').replace('.apps.dynatrace.com', '.live.dynatrace.com');\n}\n\nasync function ingestBizevents(events) {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: DT_TOKEN_CREDENTIAL_ID });\n  const url = `${ingestBaseUrl()}/api/v2/bizevents/ingest`;\n  let sent = 0;\n  for (let i = 0; i < events.length; i += 500) {\n    const batch = events.slice(i, i + 500);\n    const res = await fetch(url, {\n      method: 'POST',\n      headers: { Authorization: `Api-Token ${cred.token}`, 'Content-Type': 'application/cloudevent-batch+json' },\n      body: JSON.stringify(batch),\n    });\n    if (!res.ok) throw new Error(`Bizevent ingest ${res.status} on ${url}: ${await res.text()}`);\n    sent += batch.length;\n  }\n  return { sent };\n}\n\nasync function getToken() {\n  const cred = await credentialVaultClient.getCredentialsDetails({ id: CREDENTIAL_ID });\n  const body = new URLSearchParams({\n    client_id: cred.username,\n    client_secret: cred.password,\n    scope: `${PP}/.default`,\n    grant_type: 'client_credentials',\n  });\n  const res = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n    body,\n  });\n  if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);\n  return (await res.json()).access_token;\n}\n\nasync function pp(path, token) {\n  const url = path.startsWith('http') ? path : `${PP}${path}`;\n  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });\n  if (!res.ok) throw new Error(`Power Platform ${res.status} on ${url}: ${await res.text()}`);\n  return res.json();\n}\n\nasync function environmentNames(token) {\n  const map = {};\n  let next = `/environmentmanagement/environments?api-version=${API_VERSION}`;\n  while (next) {\n    const page = await pp(next, token);\n    for (const e of page.value ?? []) map[e.id] = e.displayName ?? e.id;\n    next = page['@odata.nextLink'];\n  }\n  return map;\n}\n\nconst isoDay = (d) => d.toISOString().slice(0, 10);\n\nexport default async function () {\n  const token = await getToken();\n  const envNames = await environmentNames(token).catch(() => ({})); // display names are nice-to-have\n\n  // Latest complete usage day (fallback: yesterday UTC)\n  const tenant = await pp(`/licensing/entitlements/MCSMessages?api-version=${API_VERSION}`, token);\n  const lastComplete = tenant?.capacity?.consumed?.lastUpdatedOn\n    ? new Date(tenant.capacity.consumed.lastUpdatedOn)\n    : new Date(Date.now() - 86400000);\n\n  const ingestTs = new Date().toISOString();\n  const events = [];\n  const days = [];\n\n  for (let i = 0; i < LOOKBACK_DAYS; i++) {\n    const day = isoDay(new Date(lastComplete.getTime() - i * 86400000));\n    days.push(day);\n    let cont = '';\n    do {\n      const q =\n        `/licensing/entitlements/MCSMessages/resources?fromDate=${day}&toDate=${day}` +\n        `&includeFields=users%2Ctags%2CasOfDate&pageSize=5000&api-version=${API_VERSION}` +\n        (cont ? `&continuationtoken=${encodeURIComponent(cont)}` : '');\n      const page = await pp(q, token);\n\n      // Live response nests value[] -> resources[]; tolerate the flat documented shape too.\n      const rows = (page.value ?? []).flatMap((v) => v.resources ?? [v]);\n      for (const r of rows) {\n        const m = r.metadata ?? {};\n        events.push({\n          specversion: '1.0',\n          source: 'powerplatform.licensing',\n          type: 'copilotstudio.credits.daily',\n          id: `${day}|${r.resourceId}|${m.FeatureName}|${m.ChannelId}|${m.ToolInvoked}|${m.LLMModel}|${ingestTs}`,\n          // Event time = ingest time (Grail rejects/clamps old timestamps); the usage day is in usage_date.\n          time: ingestTs,\n          data: {\n            usage_date: day,\n            ingest_ts: ingestTs,\n            'environment.id': r.environmentId,\n            'environment.name': envNames[r.environmentId] ?? r.environmentId,\n            'agent.id': r.resourceId,\n            'agent.name': m.ResourceName ?? r.resourceId,\n            'credits.billed': Number(r.consumed ?? 0),\n            'credits.non_billed': Number(m.NonBillableQuantity ?? 0),\n            feature: m.FeatureName ?? 'unknown',\n            channel: m.ChannelId ?? 'unknown',\n            tool: m.ToolInvoked ?? 'none',\n            'llm.model': m.LLMModel ?? 'none',\n            'knowledge.sources': m.KnowledgeSources ?? null,\n            users: m.Users ?? null,\n          },\n        });\n      }\n      cont = page.continuationtoken || page.continuationToken || '';\n    } while (cont);\n  }\n\n  const ingest = DRY_RUN ? { sent: 0 } : await ingestBizevents(events);\n\n  const byAgent = {};\n  for (const e of events) {\n    const a = (byAgent[e.data['agent.name']] ??= { billed: 0, nonBilled: 0 });\n    a.billed += e.data['credits.billed'];\n    a.nonBilled += e.data['credits.non_billed'];\n  }\n\n  return {\n    dryRun: DRY_RUN,\n    lastCompleteDay: isoDay(lastComplete),\n    days,\n    rows: events.length,\n    eventsSent: ingest.sent,\n    byAgent,\n    sample: events.slice(0, 5).map((e) => e.data),\n  };\n}",
-        "sdkMajorVersions": {
-          "@dynatrace-sdk/units": "1",
-          "@dynatrace-sdk/client-hub": "2",
-          "@dynatrace-sdk/client-iam": "1",
-          "@dynatrace-sdk/adhoc-utils": "1",
-          "@dynatrace-sdk/http-client": "1",
-          "@dynatrace-sdk/client-query": "1",
-          "@dynatrace-sdk/shared-errors": "1",
-          "@dynatrace-sdk/error-handlers": "1",
-          "@dynatrace-sdk/app-environment": "1",
-          "@dynatrace-sdk/client-document": "1",
-          "@dynatrace-sdk/automation-utils": "2",
-          "@dynatrace-sdk/client-synthetic": "4",
-          "@dynatrace-sdk/user-preferences": "1",
-          "@dynatrace-sdk/client-automation": "8",
-          "@dynatrace-sdk/client-hub-catalog": "0",
-          "@dynatrace-sdk/shared-client-utils": "1",
-          "@dynatrace-sdk/client-extensions-v2": "3",
-          "@dynatrace-sdk/client-resource-store": "1",
-          "@dynatrace-sdk/client-davis-analyzers": "1",
-          "@dynatrace-sdk/client-credential-vault": "1",
-          "@dynatrace-sdk/client-bucket-management": "3",
-          "@dynatrace-sdk/client-app-engine-registry": "3",
-          "@dynatrace-sdk/client-classic-environment-v1": "3",
-          "@dynatrace-sdk/client-classic-environment-v2": "11",
-          "@dynatrace-sdk/client-app-engine-edge-connect": "1",
-          "@dynatrace-sdk/client-service-level-objectives": "1",
-          "@dynatrace-sdk/client-filter-segment-management": "2",
-          "@dynatrace-sdk/client-platform-management-service": "1"
-        }
-      },
-      "action": "dynatrace.automations:run-javascript",
-      "active": false,
-      "position": {
-        "x": 0,
-        "y": 8
-      },
-      "conditions": {
-        "states": {
-          "copilot_licence_pull": "OK"
-        }
-      },
-      "description": "OPTIONAL, disabled by default - Copilot Studio credit consumption (Power Platform API). Needs its own config and bizevents.ingest scope",
-      "predecessors": [
-        "copilot_licence_pull"
-      ]
-    },
     "copilot_licence_pull": {
       "name": "copilot_licence_pull",
       "input": {

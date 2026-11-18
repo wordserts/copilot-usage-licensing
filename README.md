@@ -32,8 +32,6 @@ config → collect → count_prompts (×N batches) → plan_retry → retry_prom
 | `plan_retry` / `retry_prompts` | Re-runs users that timed out or were rate-limited, in smaller batches. |
 | `aggregate` | Resolves departments from the org chart and ingests the per-user, per-app and collection-health metrics. |
 | `copilot_licence_pull` | Ingests purchased/assigned seats and the per-user licence list. Reads its settings from `config`. |
-| `studio_exec_costs` | **Optional, disabled.** Copilot Studio credit consumption. See [Optional](#optional-copilot-studio-credits). |
-
 ## Before you start
 
 You need:
@@ -43,6 +41,23 @@ You need:
 - A Dynatrace admin who can create access tokens, credential vault entries and change **External requests** settings.
 - A Dynatrace environment with **Workflows**, **Dashboards** and Grail metrics.
 - Agreement from the customer's privacy owner. The metrics carry **UPN, display name and department** as dimensions, so anyone with Grail metric read access can see per-user usage (see [Who can see the data](#who-can-see-the-data)).
+
+## Everything you need to grant, at a glance
+
+Each item is explained in the step shown.
+
+| Where | What | Step |
+|---|---|---|
+| **Microsoft Graph** (application permissions, admin consent) | `Reports.Read.All`, `AiEnterpriseInteraction.Read.All`, `User.Read.All`, `Organization.Read.All`, and optionally `CopilotPackages.Read.All` | 1 |
+| **Microsoft 365** setting | Report name concealment switched **off** | 2 |
+| **Dynatrace API token** | Scope `metrics.ingest` only | 3 |
+| **Dynatrace credential vault** | Two credentials (Graph client ID and secret, ingest token), both with **App Engine** scope | 4 |
+| **Dynatrace outbound connections** | `login.microsoftonline.com`, `graph.microsoft.com`, `<env-id>.live.dynatrace.com` | 5 |
+| **Workflow actor** (owner or service user) | Run JavaScript actions, read the two vault credentials, run workflows | 6 |
+| **Whoever imports** | Create and edit workflows and dashboards, plus the admin rights from Steps 3–5 | 7, 9 |
+| **Dashboard viewers** | Open the dashboard and read Grail metrics (`storage:metrics:read`) | 9 |
+
+IAM permission names differ between tenant generations, so confirm them in your policy editor.
 
 ---
 
@@ -114,8 +129,6 @@ Workflow JavaScript can only call allow-listed hosts.
 | `<your-env-id>.live.dynatrace.com` | Metric ingest with the API token |
 
 Find your env ID in your environment URL: `https://<your-env-id>.apps.dynatrace.com`. The workflow derives the ingest host by swapping `.apps.` for `.live.`. For Managed, sprint or other non-standard hosts, set `ingest.environmentUrl` (Step 7) and allow-list that host instead.
-
-If you use the optional Copilot Studio task, also add `api.powerplatform.com`.
 
 ## Step 6 · Let the workflow actor read the credentials
 
@@ -207,12 +220,6 @@ The top of the dashboard also covers adoption overview (assigned = active + unus
 - Value and ROI figures are **estimates** from Microsoft's assisted-hours method. They are not measured productivity.
 
 ---
-
-## Optional: Copilot Studio credits
-
-The `studio_exec_costs` task is **disabled** and not used by the dashboard. It ingests per-agent Copilot Credit consumption as bizevents.
-
-To use it: register the Entra app as a Power Platform management app (`pac admin application register --application-id <client-id>`), add `bizevents.ingest` to the ingest token, allow `api.powerplatform.com`, fill in its config block, then enable it.
 
 ## Who can see the data
 
